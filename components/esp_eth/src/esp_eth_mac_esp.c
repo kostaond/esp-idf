@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/cdefs.h>
+#include <stdarg.h>
 #include "esp_private/periph_ctrl.h"
 #include "driver/gpio.h"
 #include "esp_attr.h"
@@ -226,6 +227,28 @@ static esp_err_t emac_esp32_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_t 
     emac_esp32_t *emac = __containerof(mac, emac_esp32_t, parent);
     uint32_t sent_len = emac_hal_transmit_frame(&emac->hal, buf, length);
     ESP_GOTO_ON_FALSE(sent_len == length, ESP_ERR_INVALID_SIZE, err, TAG, "insufficient TX buffer size");
+    return ESP_OK;
+err:
+    return ret;
+}
+
+static esp_err_t emac_esp32_transmit_multiple_bufs(esp_eth_mac_t *mac, uint32_t argc, ...)
+{
+    esp_err_t ret = ESP_OK;
+    emac_esp32_t *emac = __containerof(mac, emac_esp32_t, parent);
+    va_list ap;
+    uint8_t *bufs[argc];
+    uint32_t len[argc];
+    uint32_t exp_len = 0;
+    va_start(ap, argc);
+    for(int i = 0; i < argc; i++) {
+        bufs[i] = va_arg(ap, uint8_t*);
+        len[i] = va_arg(ap, uint32_t);
+        exp_len += len[i];
+    }
+    va_end(ap);
+    uint32_t sent_len = emac_hal_transmit_multiple_buf_frame(&emac->hal, bufs, len, argc);
+    ESP_GOTO_ON_FALSE(sent_len == exp_len, ESP_ERR_INVALID_SIZE, err, TAG, "insufficient TX buffer size");
     return ESP_OK;
 err:
     return ret;
@@ -614,6 +637,7 @@ esp_eth_mac_t *esp_eth_mac_new_esp32(const eth_mac_config_t *config)
     emac->parent.set_peer_pause_ability = emac_esp32_set_peer_pause_ability;
     emac->parent.enable_flow_ctrl = emac_esp32_enable_flow_ctrl;
     emac->parent.transmit = emac_esp32_transmit;
+    emac->parent.transmit_special = emac_esp32_transmit_multiple_bufs;
     emac->parent.receive = emac_esp32_receive;
     return &(emac->parent);
 

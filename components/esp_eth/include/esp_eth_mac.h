@@ -1,16 +1,8 @@
-// Copyright 2019 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * SPDX-FileCopyrightText: 2019-2021 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
 #pragma once
 
 #include <stdbool.h>
@@ -109,6 +101,21 @@ struct esp_eth_mac_s {
     *
     */
     esp_err_t (*transmit)(esp_eth_mac_t *mac, uint8_t *buf, uint32_t length);
+
+    /**
+    * @brief Transmit packet from Ethernet MAC constructed with special parameters at Layer2.
+    *
+    * @param[in] mac: Ethernet MAC instance
+    * @param[in] argc: number variable arguments (buffers)
+    *
+    * @note Typical intended use case is to make possible to construct a frame from multiple higher layer
+    *       buffers without a need of buffer reallocations. However, other use cases are not limited.
+    *
+    * @return
+    *      - ESP_OK: transmit packet successfully
+    *      - ESP_FAIL: transmit packet failed because some other error occurred
+    */
+    esp_err_t (*transmit_special)(esp_eth_mac_t *mac, uint32_t argc, ...);
 
     /**
     * @brief Receive packet from Ethernet MAC
@@ -273,6 +280,9 @@ struct esp_eth_mac_s {
     *      - ESP_FAIL: set peer pause ability failed because some error occurred
     */
     esp_err_t (*set_peer_pause_ability)(esp_eth_mac_t *mac, uint32_t ability);
+
+    // TODO: write description
+    esp_err_t (*custom_ioctl)(esp_eth_mac_t *mac, int32_t cmd, void *data);
 
     /**
     * @brief Free memory of Ethernet MAC
@@ -531,6 +541,8 @@ esp_eth_mac_t *esp_eth_mac_new_ksz8851snl(const eth_ksz8851snl_config_t *ksz8851
 */
 esp_eth_mac_t *esp_eth_mac_new_openeth(const eth_mac_config_t *config);
 #endif // CONFIG_ETH_USE_OPENETH
+
+esp_eth_mac_t *esp_eth_mac_new_ksz8863(const eth_mac_config_t *mac_config, esp_eth_mac_t *switch_mac, int port);
 
 #ifdef __cplusplus
 }

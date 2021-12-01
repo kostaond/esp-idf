@@ -225,6 +225,8 @@ struct esp_eth_phy_s {
     */
     esp_err_t (*set_duplex)(esp_eth_phy_t *phy, eth_duplex_t duplex);
 
+    esp_err_t (*custom_ioctl)(esp_eth_phy_t *phy, int32_t cmd, void *data);
+
     /**
     * @brief Free memory of Ethernet PHY instance
     *
@@ -321,6 +323,9 @@ esp_eth_phy_t *esp_eth_phy_new_dp83848(const eth_phy_config_t *config);
 *      - NULL: create PHY instance failed because some error occurred
 */
 esp_eth_phy_t *esp_eth_phy_new_ksz80xx(const eth_phy_config_t *config);
+
+// TODO: function description
+esp_eth_phy_t *esp_eth_phy_new_ksz8863(const eth_phy_config_t *config);
 
 #if CONFIG_ETH_SPI_ETHERNET_DM9051
 /**
