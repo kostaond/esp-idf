@@ -1,0 +1,332 @@
+/*
+ * SPDX-FileCopyrightText: 2022 Espressif Systems (Shanghai) CO LTD
+ *
+ * SPDX-License-Identifier: Unlicense OR CC0-1.0
+ */
+/* Ethernet Basic Example
+
+   This example code is in the Public Domain (or CC0 licensed, at your option.)
+
+   Unless required by applicable law or agreed to in writing, this
+   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+   CONDITIONS OF ANY KIND, either express or implied.
+*/
+#include <stdio.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_netif.h"
+#include "esp_eth.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "driver/gpio.h"
+#include "sdkconfig.h"
+#include "esp_check.h"
+#if CONFIG_ETH_USE_SPI_ETHERNET
+#include "driver/spi_master.h"
+#endif // CONFIG_ETH_USE_SPI_ETHERNET
+
+#include "driver/gpio.h"
+#include "esp_rom_gpio.h"
+#include "esp_rom_sys.h"
+
+// needed for L2 TAP VFS
+#include <stdio.h>
+#include <unistd.h> // read/write
+#include <sys/fcntl.h>
+#include <sys/ioctl.h>
+#include "esp_vfs_l2tap.h"
+#include "lwip/prot/ethernet.h" // Ethernet headers
+#include "errno.h"
+#include "arpa/inet.h" // for ntohs, etc.
+
+#include "esp_eth_ksz8863.h"
+
+static const char *TAG = "eth_example";
+
+/** Event handler for Ethernet events */
+static void eth_event_handler(void *arg, esp_event_base_t event_base,
+                              int32_t event_id, void *event_data)
+{
+    uint8_t mac_addr[6] = {0};
+    /* we can get the ethernet driver handle from event data */
+    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
+
+    switch (event_id) {
+    case ETHERNET_EVENT_CONNECTED:
+        esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
+        ESP_LOGI(TAG, "Ethernet Link Up");
+        ESP_LOGI(TAG, "Ethernet HW Addr %02x:%02x:%02x:%02x:%02x:%02x",
+                 mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+        break;
+    case ETHERNET_EVENT_DISCONNECTED:
+        ESP_LOGI(TAG, "Ethernet Link Down");
+        break;
+    case ETHERNET_EVENT_START:
+        ESP_LOGI(TAG, "Ethernet Started");
+        break;
+    case ETHERNET_EVENT_STOP:
+        ESP_LOGI(TAG, "Ethernet Stopped");
+        break;
+    default:
+        break;
+    }
+}
+
+/** Event handler for IP_EVENT_ETH_GOT_IP */
+static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
+                                 int32_t event_id, void *event_data)
+{
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+    const esp_netif_ip_info_t *ip_info = &event->ip_info;
+
+    ESP_LOGI(TAG, "Ethernet Got IP Address");
+    ESP_LOGI(TAG, "~~~~~~~~~~~");
+    ESP_LOGI(TAG, "ETHIP:" IPSTR, IP2STR(&ip_info->ip));
+    ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
+    ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
+    ESP_LOGI(TAG, "~~~~~~~~~~~");
+}
+
+
+typedef struct {
+    struct eth_hdr header;
+    union {
+        int cnt;
+        char str[44];
+    };
+} test_vfs_eth_tap_msg_t;
+
+// Global test message send by "send_task"
+static test_vfs_eth_tap_msg_t s_test_msg = {
+    .header = {
+        .src.addr = {0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x63},
+        //.dest.addr = { 0x01, 0x00, 0x00, 0x00, 0xBE, 0xEF },
+        .dest.addr = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
+        .type = 0x7000,
+    },
+    .str = "This is ESP32 L2 TAP test msg"
+};
+
+esp_err_t i2c_init(i2c_port_t i2c_master_port, i2c_config_t *i2c_conf)
+{
+    esp_err_t ret;
+
+    ESP_GOTO_ON_ERROR(i2c_param_config(i2c_master_port, i2c_conf), err, TAG, "I2C parameters configuration failed");
+    ESP_GOTO_ON_ERROR(i2c_driver_install(i2c_master_port, i2c_conf->mode, 0, 0, 0), err, TAG, "I2C driver install failed");
+
+    return ESP_OK;
+err:
+    return ret;
+}
+
+// board specific initialization routine, user to update per specific needs
+esp_err_t ksz8863_board_specific_init(esp_eth_handle_t eth_handle)
+{
+    esp_err_t ret = ESP_OK;
+
+#if CONFIG_EXAMPLE_CTRL_I2C
+    // initialize I2C interface
+    i2c_config_t i2c_bus_config = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = CONFIG_EXAMPLE_I2C_SDA_GPIO,
+        .scl_io_num = CONFIG_EXAMPLE_I2C_SCL_GPIO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = CONFIG_EXAMPLE_I2C_CLOCK_KHZ * 1000,
+    };
+    ESP_GOTO_ON_ERROR(i2c_init(CONFIG_EXAMPLE_I2C_MASTER_PORT, &i2c_bus_config), err, TAG, "I2C initialization failed");
+    ksz8863_ctrl_i2c_config_t i2c_dev_config = {
+        .dev_addr = KSZ8863_I2C_DEV_ADDR,
+        .i2c_master_port = CONFIG_EXAMPLE_I2C_MASTER_PORT,
+    };
+    ksz8863_ctrl_intf_config_t ctrl_intf_cfg = {
+        .host_mode = KSZ8863_I2C_MODE,
+        .i2c_dev_config = &i2c_dev_config,
+    };
+#elif CONFIG_EXAMPLE_CTRL_SPI
+#endif
+    ESP_GOTO_ON_ERROR(ksz8863_ctrl_intf_init(&ctrl_intf_cfg), err, TAG, "KSZ8863 control interface initialization failed");
+
+    // Enable KSZ's external CLK
+    esp_rom_gpio_pad_select_gpio(2); // TODO: make the GPIO number configurable in kconfig
+    gpio_set_direction(2, GPIO_MODE_OUTPUT);
+    gpio_set_level(2, 1);
+
+    ESP_GOTO_ON_ERROR(ksz8863_hw_reset(CONFIG_EXAMPLE_KSZ8863_RST_GPIO), err, TAG, "hardware reset failed");
+    // it does not make much sense to execute SW reset right after HW reset but it is present here for demonstration purposes
+    ESP_GOTO_ON_ERROR(ksz8863_sw_reset(eth_handle), err, TAG, "software reset failed");
+#if CONFIG_EXAMPLE_P3_RMII_CLKI_INTERNAL
+    ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_internal_clk(eth_handle, true), err, TAG, "P3 clk config failed");
+#endif
+
+err:
+    return ret;
+}
+
+void app_main(void)
+{
+    // Initialize TCP/IP network interface (should be called only once in application)
+    ESP_ERROR_CHECK(esp_netif_init());
+    // Create default event loop that running in background
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Init MAC and PHY configs to default
+    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+
+    phy_config.reset_gpio_num = -1; // KSZ8863 is reset by separate function call since multiple instances exist
+    mac_config.smi_mdc_gpio_num = -1;
+    mac_config.smi_mdio_gpio_num = -1;
+
+    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, 0);
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, 1);
+
+    phy_config.phy_addr = -1; // this PHY is entry point to host
+    esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
+    phy_config.phy_addr = 0; // this PHY is Port 1
+    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
+    phy_config.phy_addr = 1; // this PHY is Port 2
+    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
+    esp_eth_config_t host_config = ETH_KSZ8863_DEFAULT_CONFIG(host_mac, host_phy);
+    host_config.on_lowlevel_init_done = ksz8863_board_specific_init;
+    esp_eth_handle_t host_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&host_config, &host_eth_handle));
+
+    esp_eth_config_t p1_config = ETH_KSZ8863_DEFAULT_CONFIG(p1_mac, p1_phy);
+    esp_eth_handle_t p1_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&p1_config, &p1_eth_handle));
+
+    esp_eth_config_t p2_config = ETH_KSZ8863_DEFAULT_CONFIG(p2_mac, p2_phy);
+    esp_eth_handle_t p2_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&p2_config, &p2_eth_handle));
+
+    ksz8863_register_port_hndl(p1_eth_handle, 0);
+    ksz8863_register_port_hndl(p2_eth_handle, 1);
+
+    // Make "host eth" decide where to forward traffic
+    esp_eth_update_input_path(host_eth_handle, ksz8863_port_forward, NULL);
+
+    // KSZ8863 Ports 1/2 does not have any default MAC
+    ESP_ERROR_CHECK(esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
+            0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x0
+    }));
+    ESP_ERROR_CHECK(esp_eth_ioctl(p2_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
+            0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x01
+    }));
+
+    // Create instance(s) of esp-netif for Port1 & Port 2 Ethernets
+    esp_netif_inherent_config_t esp_netif_config = ESP_NETIF_INHERENT_DEFAULT_ETH();
+    esp_netif_config_t netif_cfg = {
+        .base = &esp_netif_config,
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
+    };
+    esp_netif_t *eth_netif_port[2] = { NULL };
+    char if_key_str[10];
+    char if_desc_str[10];
+    char num_str[3];
+    for (int i = 0; i < 2; i++) {
+        itoa(i, num_str, 10);
+        strcat(strcpy(if_key_str, "ETH_"), num_str);
+        strcat(strcpy(if_desc_str, "eth"), num_str);
+        esp_netif_config.if_key = if_key_str;
+        esp_netif_config.if_desc = if_desc_str;
+        esp_netif_config.route_prio = 30 - i;
+        eth_netif_port[i] = esp_netif_new(&netif_cfg);
+    }
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif_port[0], esp_eth_new_netif_glue(p1_eth_handle)));
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif_port[1], esp_eth_new_netif_glue(p2_eth_handle)));
+
+    // Register user defined event handers
+    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
+
+    bool enable = true;
+    esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_AUTONEGO, &enable); // specific to our board (boot strap issue on GPIO0)
+
+    // Internal EMAC needs to receive frames from other KSZ8863 ports => do not perform any filterring
+    esp_eth_ioctl(host_eth_handle, ETH_CMD_S_PROMISCUOUS, &enable);
+
+    // start Ethernet driver state machines
+    ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
+    ESP_ERROR_CHECK(esp_eth_start(p1_eth_handle));
+    ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle));
+
+    ksz8863_dyn_mac_table_t dyn_mac_tbls[5];
+    ksz8863_mac_tbl_info_t get_tbl_info ={
+        .start_entry = 0,
+        .etries_num = 5,
+        .dyn_tbls = dyn_mac_tbls,
+    };
+    ksz8863_sta_mac_table_t sta_mac_tbls[2];
+    ksz8863_mac_tbl_info_t get_sta_tbl_info ={
+        .start_entry = 0,
+        .etries_num = 2,
+        .sta_tbls = sta_mac_tbls,
+    };
+
+    ksz8863_sta_mac_table_t sta_mac_tbl;
+    ksz8863_mac_tbl_info_t set_sta_tbl_info ={
+        .start_entry = 0,
+        .etries_num = 1,
+        .sta_tbls = &sta_mac_tbl,
+    };
+    sta_mac_tbl.fwd_ports = 1;
+    memset(sta_mac_tbl.mac_addr, 0xBA, 6);
+    esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_S_MAC_STA_TBL, &set_sta_tbl_info);
+
+    while (1) {
+        esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_G_MAC_DYN_TBL, &get_tbl_info);
+        ESP_LOGI(TAG, "valid entries %d", dyn_mac_tbls[0].val_entries + 1);
+
+        ESP_LOGI(TAG, "port %d", dyn_mac_tbls[0].src_port + 1);
+        ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[0].mac_addr, 6);
+
+        ESP_LOGI(TAG, "port %d", dyn_mac_tbls[1].src_port + 1);
+        ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[1].mac_addr, 6);
+
+        ESP_LOGI(TAG, "port %d", dyn_mac_tbls[2].src_port + 1);
+        ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[2].mac_addr, 6);
+        printf("\n");
+
+        ESP_LOGI(TAG, "static MAC");
+        esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_G_MAC_STA_TBL, &get_sta_tbl_info);
+        ESP_LOGI(TAG, "fwd port %d", sta_mac_tbls[0].fwd_ports);
+        ESP_LOG_BUFFER_HEX(TAG, sta_mac_tbls[0].mac_addr, 6);
+
+        ESP_LOGI(TAG, "fwd port %d", sta_mac_tbls[1].fwd_ports);
+        ESP_LOG_BUFFER_HEX(TAG, sta_mac_tbls[1].mac_addr, 6);
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
+/*
+    esp_vfs_l2tap_intf_register(NULL);
+    int ret;
+    int eth_tap_fd = open("/dev/net/tap", O_NONBLOCK);
+    uint16_t eth_type_filter = 0x7000;
+    if ((ret = ioctl(eth_tap_fd, L2TAP_S_RCV_FILTER, &eth_type_filter)) == -1) {
+        ESP_LOGE(TAG, "filter error %d", errno);
+    }
+    // Set Ethernet interface on which to get raw frames
+    if ((ret = ioctl(eth_tap_fd, L2TAP_S_INTF_DEVICE, "ETH_0")) == -1) {
+        ESP_LOGE(TAG, "dev set error %d", errno);
+    }
+
+    uint8_t p1_mac_addr[6];
+    if ((ret = esp_eth_ioctl(p1_eth_handle, ETH_CMD_G_MAC_ADDR, p1_mac_addr)) == -1) {
+        ESP_LOGE(TAG, "get MAC addr error");
+    }
+    s_test_msg.header.type = htons(eth_type_filter);
+    memcpy(s_test_msg.header.src.addr, p1_mac_addr, 6);
+    while (1) {
+        ret = write(eth_tap_fd, &s_test_msg, sizeof(s_test_msg));
+        printf("send B: %d\n", ret);
+        if (ret == -1) {
+            printf("errno: %d\n", errno);
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+*/
+    //i2c_driver_delete(I2C_MASTER_PORT);
+}

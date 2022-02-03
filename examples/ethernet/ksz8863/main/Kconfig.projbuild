@@ -1,0 +1,135 @@
+menu "Example Configuration"
+
+    config EXAMPLE_GPIO_RANGE_MIN
+        int
+        default 0
+
+    config EXAMPLE_GPIO_RANGE_MAX
+        int
+        default 33 if IDF_TARGET_ESP32
+
+    config EXAMPLE_KSZ8863_RST_GPIO
+        int "KSZ8863 Reset GPIO number"
+        range -1 EXAMPLE_GPIO_RANGE_MAX
+        default 5
+        help
+            Set the GPIO number used to reset the chip.
+            Set to -1 to disable chip hardware reset.
+
+    choice  EXAMPLE_P3_RMII_CLK
+        prompt "KSZ8863 P3 RMII Input Clock Selection"
+        default EXAMPLE_P3_RMII_CLKI_INTERNAL
+        help
+            Select the KSZ8863 RMII REFCLK 50 MHz clock loopback.
+
+        config EXAMPLE_P3_RMII_CLKI_INTERNAL
+            bool "RMII REFCLK 50 MHz looped-back internally"
+            help
+                TODO
+
+        config EXAMPLE_P3_RMII_CLKI_EXTERNAL
+            bool "RMII REFCLK 50 MHz sourced externally"
+            help
+                TODO
+
+    endchoice # EXAMPLE_P3_RMII_CLK
+
+    choice EXAMPLE_CTRL_INTERFACE
+        prompt "KSZ8863 Control Interface"
+        default EXAMPLE_CTRL_I2C
+        help
+            Select the KSZ8863 control interface to use in the example.
+
+        config EXAMPLE_CTRL_I2C
+            bool "I2C"
+            help
+                I2C TODO
+
+        config EXAMPLE_CTRL_SPI
+            bool "SPI"
+            help
+                SPI TODO
+    endchoice # EXAMPLE_CTRL_INTERFACE
+
+    if EXAMPLE_CTRL_I2C
+        config EXAMPLE_I2C_MASTER_PORT
+            int "I2C Port Number"
+            range 0 1
+            default 0
+            help
+                Set the I2C port (controller) responsible for handling communications on the I2C bus.
+
+        config EXAMPLE_I2C_SDA_GPIO
+            int "I2C SDA GPIO Number"
+            range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+            default 18
+            help
+                Set the GPIO number used by I2C serial data line (SDA).
+
+        config EXAMPLE_I2C_SCL_GPIO
+            int "I2C SCL GPIO Number"
+            range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+            default 23
+            help
+                Set the GPIO number used by I2C serial clock (SCL).
+
+        config EXAMPLE_I2C_CLOCK_KHZ
+            int "I2C clock speed (kHz)"
+            range 1 400
+            default 400
+            help
+                Set the clock speed (kHz) of I2C interface.
+
+    endif # EXAMPLE_CTRL_I2C
+
+    if EXAMPLE_CTRL_SPI
+        config EXAMPLE_ETH_SPI_HOST
+            int "SPI Host Number"
+            range 0 2
+            default 1
+            help
+                Set the SPI host used to communicate with the SPI Ethernet Controller.
+
+        config EXAMPLE_ETH_SPI_SCLK_GPIO
+            int "SPI SCLK GPIO number"
+            range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+            default 14
+            help
+                Set the GPIO number used by SPI SCLK.
+
+        config EXAMPLE_ETH_SPI_MOSI_GPIO
+            int "SPI MOSI GPIO number"
+            range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+            default 13
+            help
+                Set the GPIO number used by SPI MOSI.
+
+        config EXAMPLE_ETH_SPI_MISO_GPIO
+            int "SPI MISO GPIO number"
+            range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+            default 12
+            help
+                Set the GPIO number used by SPI MISO.
+
+        config EXAMPLE_ETH_SPI_CLOCK_MHZ
+            int "SPI clock speed (MHz)"
+            range 5 80
+            default 12
+            help
+                Set the clock speed (MHz) of SPI interface.
+
+        config EXAMPLE_ETH_SPI_CS_GPIO
+            int "SPI CS0 GPIO number for SPI Ethernet module #1"
+            range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+            default 15
+            help
+                Set the GPIO number used by SPI CS0, i.e. Chip Select associated with the first SPI Eth module).
+
+        config EXAMPLE_ETH_SPI_INT0_GPIO
+            int "Interrupt GPIO number SPI Ethernet module #1"
+            range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+            default 4
+            help
+                Set the GPIO number used by the first SPI Ethernet module interrupt line.
+    endif # EXAMPLE_CTRL_SPI
+endmenu
