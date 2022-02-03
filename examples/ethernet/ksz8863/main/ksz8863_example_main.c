@@ -22,9 +22,6 @@
 #include "driver/gpio.h"
 #include "sdkconfig.h"
 #include "esp_check.h"
-#if CONFIG_ETH_USE_SPI_ETHERNET
-#include "driver/spi_master.h"
-#endif // CONFIG_ETH_USE_SPI_ETHERNET
 
 #include "driver/gpio.h"
 #include "esp_rom_gpio.h"
@@ -145,6 +142,24 @@ esp_err_t ksz8863_board_specific_init(esp_eth_handle_t eth_handle)
         .i2c_dev_config = &i2c_dev_config,
     };
 #elif CONFIG_EXAMPLE_CTRL_SPI
+    spi_bus_config_t buscfg = {
+        .miso_io_num = CONFIG_EXAMPLE_ETH_SPI_MISO_GPIO,
+        .mosi_io_num = CONFIG_EXAMPLE_ETH_SPI_MOSI_GPIO,
+        .sclk_io_num = CONFIG_EXAMPLE_ETH_SPI_SCLK_GPIO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(CONFIG_EXAMPLE_ETH_SPI_HOST, &buscfg, 1)); // TODO ta jednicka na ENUM
+
+    ksz8863_ctrl_spi_config_t spi_dev_config = {
+        .host_id = CONFIG_EXAMPLE_ETH_SPI_HOST,
+        .clock_speed_hz = CONFIG_EXAMPLE_ETH_SPI_CLOCK_MHZ * 1000 * 1000,
+        .spics_io_num = CONFIG_EXAMPLE_ETH_SPI_CS_GPIO,
+    };
+    ksz8863_ctrl_intf_config_t ctrl_intf_cfg = {
+        .host_mode = KSZ8863_SPI_MODE,
+        .spi_dev_config = &spi_dev_config,
+    };
 #endif
     ESP_GOTO_ON_ERROR(ksz8863_ctrl_intf_init(&ctrl_intf_cfg), err, TAG, "KSZ8863 control interface initialization failed");
 
@@ -269,7 +284,7 @@ void app_main(void)
 
     ksz8863_sta_mac_table_t sta_mac_tbl;
     ksz8863_mac_tbl_info_t set_sta_tbl_info ={
-        .start_entry = 0,
+        .start_entry = 1,
         .etries_num = 1,
         .sta_tbls = &sta_mac_tbl,
     };

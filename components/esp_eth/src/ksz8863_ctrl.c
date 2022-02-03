@@ -26,7 +26,7 @@ typedef struct
 
 typedef struct
 {
-    void *tbd;
+    spi_device_handle_t spi_handle;
 } ksz8863_spi_spec_t;
 
 typedef struct
@@ -108,6 +108,46 @@ static esp_err_t ksz8863_i2c_read(uint8_t reg_addr, uint8_t *data, size_t len)
     bus_unlock();
 err:
     i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static esp_err_t ksz8863_spi_write(uint8_t reg_addr, uint8_t *data, size_t len)
+{
+    esp_err_t ret = ESP_OK;
+
+    spi_transaction_t trans = {
+        .cmd = KSZ8863_SPI_WRITE_CMD,
+        .addr = reg_addr,
+        .length = 8 * len,
+        .tx_buffer = data
+    };
+    ESP_GOTO_ON_FALSE(bus_lock(KSZ8863_I2C_LOCK_TIMEOUT_MS), ESP_ERR_TIMEOUT, err, TAG, "SPI bus lock timeout"); // TODO: define SPI timeout
+    ESP_GOTO_ON_ERROR(spi_device_polling_transmit(s_ksz8863_ctrl_intf->spi_bus_spec.spi_handle, &trans), err, TAG, "SPI transmit fail");
+    bus_unlock();
+err:
+    return ret;
+}
+
+static esp_err_t ksz8863_spi_read(uint8_t reg_addr, uint8_t *data, size_t len)
+{
+    esp_err_t ret = ESP_OK;
+
+    // TODO: double check how it behaves with DMA
+    spi_transaction_t trans = {
+        .flags = len <= 4 ? SPI_TRANS_USE_RXDATA : 0, // use direct reads for registers to prevent overwrites by 4-byte boundary writes
+        .cmd = KSZ8863_SPI_READ_CMD,
+        .addr = reg_addr,
+        .length = 8 * len,
+        .rx_buffer = data
+    };
+    ESP_GOTO_ON_FALSE(bus_lock(KSZ8863_I2C_LOCK_TIMEOUT_MS), ESP_ERR_TIMEOUT, err, TAG, "SPI bus lock timeout");
+    ESP_GOTO_ON_ERROR(spi_device_polling_transmit(s_ksz8863_ctrl_intf->spi_bus_spec.spi_handle, &trans), err, TAG, "SPI transmit fail");
+    bus_unlock();
+
+    if ((trans.flags & SPI_TRANS_USE_RXDATA) && len <= 4) {
+        memcpy(data, trans.rx_data, len);  // copy register values to output
+    }
+err:
     return ret;
 }
 
@@ -258,7 +298,19 @@ esp_err_t ksz8863_ctrl_intf_init(ksz8863_ctrl_intf_config_t *config)
         s_ksz8863_ctrl_intf->ksz8863_reg_read = ksz8863_i2c_read;
         s_ksz8863_ctrl_intf->ksz8863_reg_write = ksz8863_i2c_write;
         break;
-    case KSZ8863_SPI_MODE:
+    case KSZ8863_SPI_MODE:;
+        spi_device_interface_config_t devcfg = {
+            .command_bits = 8,
+            .address_bits = 8,
+            .mode = 0,
+            .clock_speed_hz = config->spi_dev_config->clock_speed_hz,
+            .spics_io_num = config->spi_dev_config->spics_io_num,
+            .queue_size = 20
+        };
+        ESP_ERROR_CHECK(spi_bus_add_device(config->spi_dev_config->host_id, &devcfg, &s_ksz8863_ctrl_intf->spi_bus_spec.spi_handle));
+
+        s_ksz8863_ctrl_intf->ksz8863_reg_read = ksz8863_spi_read;
+        s_ksz8863_ctrl_intf->ksz8863_reg_write = ksz8863_spi_write;
     case KSZ8863_SMI_MODE:
     default:
         break;
@@ -275,7 +327,9 @@ esp_err_t ksz8863_ctrl_intf_deinit(void)
         switch (s_ksz8863_ctrl_intf->mode)
         {
         case KSZ8863_I2C_MODE:
+            break;
         case KSZ8863_SPI_MODE:
+            spi_bus_remove_device(s_ksz8863_ctrl_intf->spi_bus_spec.spi_handle);
         case KSZ8863_SMI_MODE:
         default:
             break;

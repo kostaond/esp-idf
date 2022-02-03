@@ -150,9 +150,7 @@ err:
     return ret;
 }
 
-/**
- * @brief start ksz8863: enable interrupt and start receive
- */
+// TODO: investigate if needed (currently seems it no needed, since it is started automaticaly)
 static esp_err_t emac_ksz8863_start(esp_eth_mac_t *mac)
 {
     esp_err_t ret = ESP_OK;
@@ -168,8 +166,7 @@ static esp_err_t emac_ksz8863_stop(esp_eth_mac_t *mac)
 {
     esp_err_t ret = ESP_OK;
     //pmac_ksz8863_t *emac = __containerof(mac, pmac_ksz8863_t, parent);
-    /* disable interrupt */
-    /* disable rx */
+
     return ret;
 }
 

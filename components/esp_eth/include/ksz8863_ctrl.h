@@ -7,7 +7,8 @@
 
 #include "esp_err.h"
 #include "driver/i2c.h"
-#include "esp_eth.h" // for
+#include "driver/spi_master.h"
+#include "esp_eth.h" // for esp_eth_handle_t
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +29,12 @@ typedef struct
     i2c_port_t i2c_master_port;
 } ksz8863_ctrl_i2c_config_t;
 
+typedef struct
+{
+    spi_host_device_t host_id;
+    int32_t clock_speed_hz;
+    int32_t spics_io_num;
+} ksz8863_ctrl_spi_config_t;
 
 typedef struct
 {
@@ -35,7 +42,7 @@ typedef struct
     union
     {
         ksz8863_ctrl_i2c_config_t *i2c_dev_config;
-        void *spi_config_tbd; //TODO
+        ksz8863_ctrl_spi_config_t *spi_dev_config;
     };
 } ksz8863_ctrl_intf_config_t;
 

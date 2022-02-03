@@ -24,31 +24,33 @@ struct ksz8863_port_tbl_s {
     SLIST_ENTRY(ksz8863_port_tbl_s) next;
 };
 
-static SLIST_HEAD(slisthead, ksz8863_port_tbl_s) port_tbls_head;
+static SLIST_HEAD(slisthead, ksz8863_port_tbl_s) s_port_tbls_head;
 
-esp_err_t ksz8863_register_port_hndl(esp_eth_handle_t port_eth_handle, int32_t port_num) //TODO mutex?
+esp_err_t ksz8863_register_port_hndl(esp_eth_handle_t port_eth_handle, int32_t port_num)
 {
     struct ksz8863_port_tbl_s *item = malloc(sizeof(struct ksz8863_port_tbl_s));
     item->eth_handle = port_eth_handle;
     item->port_num = port_num;
-    SLIST_INSERT_HEAD(&port_tbls_head, item, next);
+    SLIST_INSERT_HEAD(&s_port_tbls_head, item, next);
 
     return ESP_OK;
 }
 
 esp_err_t ksz8863_unregister_port_hndl(esp_eth_handle_t eth_handle)
 {
-    // TODO
+    struct ksz8863_port_tbl_s *item;
+    while (!SLIST_EMPTY(&s_port_tbls_head)) {
+        item = SLIST_FIRST(&s_port_tbls_head);
+        SLIST_REMOVE_HEAD(&s_port_tbls_head, next);
+        free(item);
+    }
     return ESP_OK;
 }
 
 esp_err_t ksz8863_port_forward(esp_eth_handle_t host_eth_handle, uint8_t *buffer, uint32_t length, void *priv)
 {
-    /*printf("rx len %d ", length);
-    printf("port 0x%x\n", buffer[length-1]);*/
-
     struct ksz8863_port_tbl_s *item;
-    SLIST_FOREACH(item, &port_tbls_head, next) {
+    SLIST_FOREACH(item, &s_port_tbls_head, next) {
         if (item->port_num == buffer[length - 1]) {
             esp_eth_mediator_t *eth = item->eth_handle;
             eth->stack_input(eth, buffer, length - 1);

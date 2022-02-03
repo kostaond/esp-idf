@@ -430,7 +430,7 @@ esp_err_t esp_eth_ioctl(esp_eth_handle_t hdl, esp_eth_io_cmd_t cmd, void *data)
         } else if (phy->custom_ioctl != NULL) {
             custom_ioctl_ret = phy->custom_ioctl(phy, cmd, data);
         }
-        ESP_GOTO_ON_FALSE(custom_ioctl_ret == ESP_OK, ESP_ERR_INVALID_ARG, err, TAG, "unknown io command: %d", cmd);
+        ESP_GOTO_ON_FALSE(custom_ioctl_ret == ESP_OK, ESP_ERR_INVALID_ARG, err, TAG, "unknown io command: %d", cmd); // TODO: when custom ioctl returns error, this is printed and it is misleading
         break;
     }
 err:
