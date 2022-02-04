@@ -124,18 +124,34 @@ static esp_err_t ksz8863_setup_global_defaults(pmac_ksz8863_t *emac)
         // TODO: test if below is true!! It appears like that (base on KSZ status regs.) but should be tested
         // Disable Flow control globally to be able to force it locally on port basis
         ksz8863_gcr1_reg_t gcr1;
-        ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR1_ADDR + emac->port_reg_offset, &(gcr1.val)), err, TAG, "read GC1 failed");
+        ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR1_ADDR, &(gcr1.val)), err, TAG, "read GC1 failed");
         gcr1.rx_flow_ctrl_en = 0;
         gcr1.tx_flow_ctrl_en = 0;
-        ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR1_ADDR + emac->port_reg_offset, gcr1.val), err, TAG, "write GC1 failed");
+        ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR1_ADDR, gcr1.val), err, TAG, "write GC1 failed");
+
+        // Forward IGMP packets directly to P3 (Host) port
+        ksz8863_gcr3_reg_t gcr3;
+        ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR1_ADDR, &(gcr3.val)), err, TAG, "read GC3 failed");
+        gcr3.igmp_snoop_en = 1;
+        ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR1_ADDR, gcr3.val), err, TAG, "write GC3 failed");
 
         if (emac->mode == KSZ8863_PORT_MODE) {
+            // Enable forwarding of frames with unknown DA but do NOT specify any port to forward (it can be set later by "set_promiscuous").
+            // This ensures that multicast frames are not forwarded directly between P1 and P2 and so these ports act as endpoints. Otherwise,
+            // multicast frames could be looped between P1 and P2 and flood the network if P1 and P2 were connected the same switch
+            // (or in presence of redundant path in used network).
+            ksz8863_gcr12_reg_t gcr12;
+            ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR12_ADDR, &(gcr12.val)), err, TAG, "read GC12 failed");
+            gcr12.unknown_da_to_port_en = 1;
+            gcr12.unknown_da_to_port = 0;
+            ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR12_ADDR, gcr12.val), err, TAG, "write GC12 failed");
+
             // Enable Tail tagging
             ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR1_ADDR, &(gcr1.val)), err, TAG, "read GC1 failed");
             gcr1.tail_tag_en = 1;
             ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR1_ADDR, gcr1.val), err, TAG, "write GC1 failed");
 
-            // Broadcast needs to be forwared to P3 to P1/P2 act as endpoints (no traffic exchanged between them directly)
+            // Broadcast needs to be forwared to P3 and so P1/P2 act as endpoints (no traffic exchanged between them directly)
             ksz8863_sta_mac_table_t stat_mac_table;
             memset(stat_mac_table.data, 0, sizeof(stat_mac_table));
             stat_mac_table.fwd_ports = KSZ8863_TO_PORT3;
@@ -256,12 +272,12 @@ static esp_err_t emac_ksz8863_set_promiscuous(esp_eth_mac_t *mac, bool enable)
         gcr12.unknown_da_to_port_en = 1;
         gcr12.unknown_da_to_port = KSZ8863_TO_PORT3;
     } else {
-        gcr12.unknown_da_to_port_en = 0;
+        gcr12.unknown_da_to_port_en = 1;
         gcr12.unknown_da_to_port = 0;
     }
     ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR12_ADDR, gcr12.val), err, TAG, "write GC12 failed");
 
-    ESP_LOGW(TAG, "forwarding frames with unknown DA applies for both P1 adn P2 ingress ports"); // TODO: consider better formulation
+    ESP_LOGW(TAG, "forwarding frames with unknown DA applies for both P1 and P2 ingress ports"); // TODO: consider better formulation
 err:
     return ret;
 }
@@ -329,7 +345,8 @@ static esp_err_t emac_ksz8863_get_mac_tbl(pmac_ksz8863_t *emac, ksz8863_indir_ac
 {
     esp_err_t ret = ESP_OK;
     for (int i = 0; i < tbls_info->etries_num; i++) {
-        ESP_GOTO_ON_ERROR(ksz8863_indirect_read(tbl, tbls_info->start_entry + i, &tbls_info->sta_tbls[i],
+        ESP_GOTO_ON_ERROR(ksz8863_indirect_read(tbl, tbls_info->start_entry + i,
+                            tbl == KSZ8863_STA_MAC_TABLE ? (void *)&tbls_info->sta_tbls[i] : (void *)&tbls_info->dyn_tbls[i],
                             tbl == KSZ8863_STA_MAC_TABLE ? sizeof(ksz8863_sta_mac_table_t) : sizeof(ksz8863_dyn_mac_table_t)),
                             err, TAG, "failed to read MAC table");
     }
@@ -376,6 +393,7 @@ static esp_err_t emac_ksz8863_custom_ioctl(esp_eth_mac_t *mac, int32_t cmd, void
         *(bool *)data = gcr1.tail_tag_en;
         break;
     default:
+        ret = ESP_ERR_INVALID_ARG;
         break;
     }
 err:

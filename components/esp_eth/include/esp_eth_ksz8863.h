@@ -48,6 +48,7 @@ typedef struct
 esp_err_t ksz8863_sw_reset(esp_eth_handle_t eth_handle);
 esp_err_t ksz8863_hw_reset(int reset_gpio_num);
 esp_err_t ksz8863_p3_rmii_internal_clk(esp_eth_handle_t eth_handle, bool rmii_internal_clk);
+esp_err_t ksz8863_p3_rmii_clk_invert(esp_eth_handle_t eth_handle, bool rmii_clk_invert);
 
 esp_err_t ksz8863_register_port_hndl(esp_eth_handle_t port_eth_handle, int32_t port_num);
 esp_err_t ksz8863_port_forward(esp_eth_handle_t host_eth_handle, uint8_t *buffer, uint32_t length, void *priv);

@@ -149,7 +149,7 @@ esp_err_t ksz8863_board_specific_init(esp_eth_handle_t eth_handle)
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(CONFIG_EXAMPLE_ETH_SPI_HOST, &buscfg, 1)); // TODO ta jednicka na ENUM
+    ESP_ERROR_CHECK(spi_bus_initialize(CONFIG_EXAMPLE_ETH_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
     ksz8863_ctrl_spi_config_t spi_dev_config = {
         .host_id = CONFIG_EXAMPLE_ETH_SPI_HOST,
@@ -172,9 +172,12 @@ esp_err_t ksz8863_board_specific_init(esp_eth_handle_t eth_handle)
     // it does not make much sense to execute SW reset right after HW reset but it is present here for demonstration purposes
     ESP_GOTO_ON_ERROR(ksz8863_sw_reset(eth_handle), err, TAG, "software reset failed");
 #if CONFIG_EXAMPLE_P3_RMII_CLKI_INTERNAL
-    ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_internal_clk(eth_handle, true), err, TAG, "P3 clk config failed");
+    ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_internal_clk(eth_handle, true), err, TAG, "P3 internal clk config failed");
 #endif
 
+#if XXX // TODO: add to Kconfig
+    ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_clk_invert(eth_handle, true), err, TAG, "P3 invert ckl failed");
+#endif
 err:
     return ret;
 }
@@ -226,7 +229,7 @@ void app_main(void)
 
     // KSZ8863 Ports 1/2 does not have any default MAC
     ESP_ERROR_CHECK(esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
-            0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x0
+            0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x00
     }));
     ESP_ERROR_CHECK(esp_eth_ioctl(p2_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
             0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x01
@@ -288,22 +291,19 @@ void app_main(void)
         .etries_num = 1,
         .sta_tbls = &sta_mac_tbl,
     };
-    sta_mac_tbl.fwd_ports = 1;
-    memset(sta_mac_tbl.mac_addr, 0xBA, 6);
+    sta_mac_tbl.fwd_ports = 1 << 2;
+    sta_mac_tbl.entry_val = 1;
+    memset(sta_mac_tbl.mac_addr, 0xff, 6);
+    sta_mac_tbl.mac_addr[0] = 0x01;
     esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_S_MAC_STA_TBL, &set_sta_tbl_info);
 
     while (1) {
         esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_G_MAC_DYN_TBL, &get_tbl_info);
         ESP_LOGI(TAG, "valid entries %d", dyn_mac_tbls[0].val_entries + 1);
-
-        ESP_LOGI(TAG, "port %d", dyn_mac_tbls[0].src_port + 1);
-        ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[0].mac_addr, 6);
-
-        ESP_LOGI(TAG, "port %d", dyn_mac_tbls[1].src_port + 1);
-        ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[1].mac_addr, 6);
-
-        ESP_LOGI(TAG, "port %d", dyn_mac_tbls[2].src_port + 1);
-        ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[2].mac_addr, 6);
+        for (int i = 0; i < (dyn_mac_tbls[0].val_entries + 1); i++) {
+            ESP_LOGI(TAG, "port %d", dyn_mac_tbls[i].src_port + 1);
+            ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[i].mac_addr, 6);
+        }
         printf("\n");
 
         ESP_LOGI(TAG, "static MAC");
@@ -313,6 +313,7 @@ void app_main(void)
 
         ESP_LOGI(TAG, "fwd port %d", sta_mac_tbls[1].fwd_ports);
         ESP_LOG_BUFFER_HEX(TAG, sta_mac_tbls[1].mac_addr, 6);
+        printf("\n");
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 /*

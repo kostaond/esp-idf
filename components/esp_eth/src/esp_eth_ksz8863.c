@@ -103,3 +103,18 @@ esp_err_t ksz8863_p3_rmii_internal_clk(esp_eth_handle_t eth_handle, bool rmii_in
 err:
     return ret;
 }
+
+esp_err_t ksz8863_p3_rmii_clk_invert(esp_eth_handle_t eth_handle, bool rmii_clk_invert)
+{
+    esp_err_t ret = ESP_OK;
+    esp_eth_mediator_t *eth = (esp_eth_mediator_t *)eth_handle;
+
+    ksz8863_idrlq0_reg_t idrlq0;
+    ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_P3IDRLQ0_ADDR, &(idrlq0.val)), err, TAG, "read P3IDRLQ0 failed");
+    idrlq0.rmii_reflck_invert = rmii_clk_invert;
+    ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_P3IDRLQ0_ADDR, idrlq0.val), err, TAG, "write P3IDRLQ0 failed");
+
+    return ESP_OK;
+err:
+    return ret;
+}

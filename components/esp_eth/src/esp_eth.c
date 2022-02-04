@@ -423,14 +423,14 @@ esp_err_t esp_eth_ioctl(esp_eth_handle_t hdl, esp_eth_io_cmd_t cmd, void *data)
         ESP_GOTO_ON_ERROR(phy->loopback(phy, *(bool *)data), err, TAG, "configuration of phy loopback mode failed");
 
         break;
-    default:;
-        esp_err_t custom_ioctl_ret = false;
+    default:
         if (mac->custom_ioctl != NULL) {
-            custom_ioctl_ret = mac->custom_ioctl(mac, cmd, data);
+            ret = mac->custom_ioctl(mac, cmd, data);
         } else if (phy->custom_ioctl != NULL) {
-            custom_ioctl_ret = phy->custom_ioctl(phy, cmd, data);
+            ret = phy->custom_ioctl(phy, cmd, data);
+        } else {
+            ESP_GOTO_ON_FALSE(false, ESP_ERR_INVALID_ARG, err, TAG, "unknown io command: %d", cmd);
         }
-        ESP_GOTO_ON_FALSE(custom_ioctl_ret == ESP_OK, ESP_ERR_INVALID_ARG, err, TAG, "unknown io command: %d", cmd); // TODO: when custom ioctl returns error, this is printed and it is misleading
         break;
     }
 err:
