@@ -31,9 +31,6 @@
 #include "ksz8863_ctrl_internal.h" // indirect read/write
 #include "ksz8863.h" // registers
 
-#define KSZ8863_PORT_1 (0)
-#define KSZ8863_PORT_2 (1)
-
 #define KSZ8863_GLOBAL_INIT_DONE     (1 << 0)
 
 static const char *TAG = "ksz8863_mac";
@@ -50,7 +47,7 @@ typedef struct {
     uint32_t sw_reset_timeout_ms;
     pmac_ksz8863_mode_t mode;
     bool flow_ctrl_enabled;
-    int port;
+    int32_t port;
     uint8_t port_reg_offset;
     esp_eth_mac_t *host_mac;
     uint32_t status;
@@ -91,14 +88,16 @@ static esp_err_t ksz8863_setup_port_defaults(pmac_ksz8863_t *emac)
     esp_err_t ret = ESP_OK;
     esp_eth_mediator_t *eth = emac->eth;
 
-    // Filter frames with MAC addresses originating from us (typically broadcast frames "looped" back by other switch)
-    ksz8863_pcr5_reg_t pcr5;
-    ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_PCR5_BASE_ADDR + emac->port_reg_offset,
-                        &(pcr5.val)), err, TAG, "read Port Control 5 failed");
-    pcr5.filter_maca1_en = 1;
-    pcr5.filter_maca2_en = 1;
-    ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_PCR5_BASE_ADDR + emac->port_reg_offset,
-                        pcr5.val), err, TAG, "write Port Control 5 failed");
+    if (emac->mode == KSZ8863_PORT_MODE) {
+        // Filter frames with MAC addresses originating from us (typically broadcast frames "looped" back by other switch)
+        ksz8863_pcr5_reg_t pcr5;
+        ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_PCR5_BASE_ADDR + emac->port_reg_offset,
+                            &(pcr5.val)), err, TAG, "read Port Control 5 failed");
+        pcr5.filter_maca1_en = 1;
+        pcr5.filter_maca2_en = 1;
+        ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_PCR5_BASE_ADDR + emac->port_reg_offset,
+                            pcr5.val), err, TAG, "write Port Control 5 failed");
+    }
 
     return ESP_OK;
 err:
@@ -131,9 +130,9 @@ static esp_err_t ksz8863_setup_global_defaults(pmac_ksz8863_t *emac)
 
         // Forward IGMP packets directly to P3 (Host) port
         ksz8863_gcr3_reg_t gcr3;
-        ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR1_ADDR, &(gcr3.val)), err, TAG, "read GC3 failed");
+        ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR3_ADDR, &(gcr3.val)), err, TAG, "read GC3 failed");
         gcr3.igmp_snoop_en = 1;
-        ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR1_ADDR, gcr3.val), err, TAG, "write GC3 failed");
+        ESP_GOTO_ON_ERROR(eth->phy_reg_write(eth, 0, KSZ8863_GCR3_ADDR, gcr3.val), err, TAG, "write GC3 failed");
 
         if (emac->mode == KSZ8863_PORT_MODE) {
             // Enable forwarding of frames with unknown DA but do NOT specify any port to forward (it can be set later by "set_promiscuous").
@@ -265,6 +264,8 @@ static esp_err_t emac_ksz8863_set_promiscuous(esp_eth_mac_t *mac, bool enable)
     pmac_ksz8863_t *emac = __containerof(mac, pmac_ksz8863_t, parent);
     esp_eth_mediator_t *eth = emac->eth;
 
+    ESP_GOTO_ON_FALSE(emac->mode == KSZ8863_PORT_MODE, ESP_ERR_INVALID_STATE, err, TAG, "promiscuous is available only in Port Mode");
+
     // Forward frames with unknown DA to Port 3 ("promiscuous" as such is not mentioned in datasheet)
     ksz8863_gcr12_reg_t gcr12;
     ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR12_ADDR, &(gcr12.val)), err, TAG, "read GC12 failed");
@@ -359,6 +360,7 @@ static esp_err_t emac_ksz8863_custom_ioctl(esp_eth_mac_t *mac, int32_t cmd, void
     // TODO:
     // flush static/dynamic MAC
     // Tx/Rx/Learning (PCR2) for spanning tree support
+    // get port number (from PMAC infostruct)
 
     esp_err_t ret = ESP_OK;
     pmac_ksz8863_t *emac = __containerof(mac, pmac_ksz8863_t, parent);
@@ -391,6 +393,10 @@ static esp_err_t emac_ksz8863_custom_ioctl(esp_eth_mac_t *mac, int32_t cmd, void
         ESP_GOTO_ON_FALSE(data, ESP_ERR_INVALID_ARG, err, TAG, "no mem to store tail tag status");
         ESP_GOTO_ON_ERROR(eth->phy_reg_read(eth, 0, KSZ8863_GCR1_ADDR, &(gcr1.val)), err, TAG, "read GC1 failed");
         *(bool *)data = gcr1.tail_tag_en;
+        break;
+    case KSZ8863_ETH_CMD_G_PORT_NUM:
+        ESP_GOTO_ON_FALSE(data, ESP_ERR_INVALID_ARG, err, TAG, "no mem to store port number");
+        *(int32_t *)data = emac->port;
         break;
     default:
         ret = ESP_ERR_INVALID_ARG;
@@ -527,9 +533,9 @@ esp_eth_mac_t *esp_eth_mac_new_ksz8863(/*const eth_ksz8863_config_t *ksz8863_con
     emac->parent.transmit = pmac_ksz8863_transmit;
     emac->parent.receive = emac_ksz8863_receive;
 
-    if (port == 0) {
+    if (port == KSZ8863_PORT_1) {
         emac->port_reg_offset = KSZ8863_PORT1_ADDR_OFFSET;
-    } else if (port == 1) {
+    } else if (port == KSZ8863_PORT_2) {
         emac->port_reg_offset = KSZ8863_PORT2_ADDR_OFFSET;
     }
     emac->port = port;

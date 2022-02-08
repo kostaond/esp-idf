@@ -9,6 +9,9 @@
 #include "esp_eth.h"
 #include "ksz8863_ctrl.h"
 
+#define KSZ8863_PORT_1 (0)
+#define KSZ8863_PORT_2 (1)
+
 /**
  * @brief Default configuration for KSZ8863 Ethernet driver
  *
@@ -31,6 +34,7 @@ typedef enum {
     KSZ8863_ETH_CMD_G_MAC_DYN_TBL,
     KSZ8863_ETH_CMD_S_TAIL_TAG,
     KSZ8863_ETH_CMD_G_TAIL_TAG,
+    KSZ8863_ETH_CMD_G_PORT_NUM,
 } ksz8863_eth_io_cmd_t;
 
 #include "../src/ksz8863.h" // TODO: just for demonstration will be probably removed

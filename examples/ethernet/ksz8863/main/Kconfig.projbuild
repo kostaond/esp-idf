@@ -34,6 +34,20 @@ menu "Example Configuration"
 
     endchoice # EXAMPLE_P3_RMII_CLK
 
+    config EXAMPLE_EXTERNAL_CLK_EN
+        bool "Enable external RMII clock oscillator"
+        default "y"
+        help
+            Enable external clock oscillator
+
+    config EXAMPLE_EXTERNAL_CLK_EN_GPIO
+        depends on EXAMPLE_EXTERNAL_CLK_EN
+        int "External oscillator enable GPIO"
+        range EXAMPLE_GPIO_RANGE_MIN EXAMPLE_GPIO_RANGE_MAX
+        default 2
+        help
+            Set GPIO number to enable External clock oscillator
+
     choice EXAMPLE_CTRL_INTERFACE
         prompt "KSZ8863 Control Interface"
         default EXAMPLE_CTRL_I2C

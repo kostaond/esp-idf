@@ -46,13 +46,20 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
                               int32_t event_id, void *event_data)
 {
     uint8_t mac_addr[6] = {0};
+    int32_t port_num;
+    esp_err_t ret;
     /* we can get the ethernet driver handle from event data */
     esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
 
     switch (event_id) {
     case ETHERNET_EVENT_CONNECTED:
         esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
-        ESP_LOGI(TAG, "Ethernet Link Up");
+        ret = esp_eth_ioctl(eth_handle, KSZ8863_ETH_CMD_G_PORT_NUM, &port_num);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Ethernet Link Up Port %d", port_num + 1);
+        } else {
+            ESP_LOGI(TAG, "Ethernet Link Up");
+        }
         ESP_LOGI(TAG, "Ethernet HW Addr %02x:%02x:%02x:%02x:%02x:%02x",
                  mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
         break;
@@ -163,10 +170,12 @@ esp_err_t ksz8863_board_specific_init(esp_eth_handle_t eth_handle)
 #endif
     ESP_GOTO_ON_ERROR(ksz8863_ctrl_intf_init(&ctrl_intf_cfg), err, TAG, "KSZ8863 control interface initialization failed");
 
+#ifdef CONFIG_EXAMPLE_EXTERNAL_CLK_EN
     // Enable KSZ's external CLK
-    esp_rom_gpio_pad_select_gpio(2); // TODO: make the GPIO number configurable in kconfig
-    gpio_set_direction(2, GPIO_MODE_OUTPUT);
-    gpio_set_level(2, 1);
+    esp_rom_gpio_pad_select_gpio(CONFIG_EXAMPLE_EXTERNAL_CLK_EN_GPIO);
+    gpio_set_direction(CONFIG_EXAMPLE_EXTERNAL_CLK_EN_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(CONFIG_EXAMPLE_EXTERNAL_CLK_EN_GPIO, 1);
+#endif
 
     ESP_GOTO_ON_ERROR(ksz8863_hw_reset(CONFIG_EXAMPLE_KSZ8863_RST_GPIO), err, TAG, "hardware reset failed");
     // it does not make much sense to execute SW reset right after HW reset but it is present here for demonstration purposes
@@ -194,12 +203,13 @@ void app_main(void)
     eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
 
     phy_config.reset_gpio_num = -1; // KSZ8863 is reset by separate function call since multiple instances exist
-    mac_config.smi_mdc_gpio_num = -1;
+    mac_config.smi_mdc_gpio_num = -1; // MIIM interface is not used since does not provide access to all registers
     mac_config.smi_mdio_gpio_num = -1;
 
+#if PORT_MODE
     esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
-    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, 0);
-    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, 1);
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_1);
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_2);
 
     phy_config.phy_addr = -1; // this PHY is entry point to host
     esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
@@ -271,6 +281,48 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
     ESP_ERROR_CHECK(esp_eth_start(p1_eth_handle));
     ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle));
+#else
+    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, NULL, KSZ8863_PORT_1);
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, NULL, KSZ8863_PORT_2);
+
+    phy_config.phy_addr = -1; // this PHY is entry point to host
+    esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
+    phy_config.phy_addr = 0; // this PHY is Port 1
+    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
+    phy_config.phy_addr = 1; // this PHY is Port 2
+    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
+    esp_eth_config_t host_config = ETH_KSZ8863_DEFAULT_CONFIG(host_mac, host_phy);
+    host_config.on_lowlevel_init_done = ksz8863_board_specific_init;
+    esp_eth_handle_t host_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&host_config, &host_eth_handle));
+
+    esp_eth_config_t p1_config = ETH_KSZ8863_DEFAULT_CONFIG(p1_mac, p1_phy);
+    esp_eth_handle_t p1_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&p1_config, &p1_eth_handle));
+
+    esp_eth_config_t p2_config = ETH_KSZ8863_DEFAULT_CONFIG(p2_mac, p2_phy);
+    esp_eth_handle_t p2_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&p2_config, &p2_eth_handle));
+
+    // Create new default instance of esp-netif for Host Ethernet Port (P3)
+    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *eth_netif = esp_netif_new(&cfg);
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(host_eth_handle)));
+
+    // Register user defined event handers
+    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
+
+    bool enable = true;
+    esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_AUTONEGO, &enable); // specific to our board (boot strap issue on GPIO0)
+
+    // start Ethernet driver state machines
+    ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
+    ESP_ERROR_CHECK(esp_eth_start(p1_eth_handle)); // p1/2_eth_handle are going to be used basically only for Link Status indication and for configuration access
+    ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle));
+#endif
 
     ksz8863_dyn_mac_table_t dyn_mac_tbls[5];
     ksz8863_mac_tbl_info_t get_tbl_info ={
@@ -300,7 +352,7 @@ void app_main(void)
     while (1) {
         esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_G_MAC_DYN_TBL, &get_tbl_info);
         ESP_LOGI(TAG, "valid entries %d", dyn_mac_tbls[0].val_entries + 1);
-        for (int i = 0; i < (dyn_mac_tbls[0].val_entries + 1); i++) {
+        for (int i = 0; i < (dyn_mac_tbls[0].val_entries + 1) && i < 5; i++) {
             ESP_LOGI(TAG, "port %d", dyn_mac_tbls[i].src_port + 1);
             ESP_LOG_BUFFER_HEX(TAG, dyn_mac_tbls[i].mac_addr, 6);
         }
