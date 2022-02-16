@@ -225,8 +225,21 @@ static esp_err_t emac_esp32_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_t 
 {
     esp_err_t ret = ESP_OK;
     emac_esp32_t *emac = __containerof(mac, emac_esp32_t, parent);
-    uint32_t sent_len = emac_hal_transmit_frame(&emac->hal, buf, length);
-    ESP_GOTO_ON_FALSE(sent_len == length, ESP_ERR_INVALID_SIZE, err, TAG, "insufficient TX buffer size");
+    //uint32_t sent_len = emac_hal_transmit_frame(&emac->hal, buf, length);
+    //ESP_GOTO_ON_FALSE(sent_len == length, ESP_ERR_INVALID_SIZE, err, TAG, "insufficient TX buffer size");
+
+    if (length < ETH_HEADER_LEN + ETH_MIN_PAYLOAD_LEN) {
+        uint32_t tail_len = ETH_HEADER_LEN + ETH_MIN_PAYLOAD_LEN - length + 1;
+        uint8_t *buff_tail = calloc(1, tail_len);
+        ESP_GOTO_ON_FALSE(buff_tail, ESP_ERR_NO_MEM, err, TAG, "no memory");
+        buff_tail[tail_len - 1] = 0;
+        emac->parent.transmit_special(mac, 2, buf, length, buff_tail, tail_len);
+        free(buff_tail);
+    } else {
+        uint8_t port = 0;
+        emac->parent.transmit_special(mac, 2, buf, length, &port, 1);
+    }
+
     return ESP_OK;
 err:
     return ret;

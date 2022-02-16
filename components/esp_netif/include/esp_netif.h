@@ -396,6 +396,9 @@ esp_err_t esp_netif_set_mac(esp_netif_t *esp_netif, uint8_t mac[]);
  */
 esp_err_t esp_netif_get_mac(esp_netif_t *esp_netif, uint8_t mac[]);
 
+//TODO: add function description
+esp_err_t esp_netif_add_port_bridge(esp_netif_t *esp_netif_br, esp_netif_t *esp_netif_port);
+
 /**
  * @brief  Set the hostname of an interface
  *

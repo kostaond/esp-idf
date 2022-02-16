@@ -50,6 +50,7 @@ esp_err_t ksz8863_unregister_port_hndl(esp_eth_handle_t eth_handle)
 esp_err_t ksz8863_port_forward(esp_eth_handle_t host_eth_handle, uint8_t *buffer, uint32_t length, void *priv)
 {
     struct ksz8863_port_tbl_s *item;
+    //printf("len %u\n", length);
     SLIST_FOREACH(item, &s_port_tbls_head, next) {
         if (item->port_num == buffer[length - 1]) {
             esp_eth_mediator_t *eth = item->eth_handle;

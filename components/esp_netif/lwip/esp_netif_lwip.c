@@ -24,6 +24,7 @@
 #include "lwip/nd6.h"
 #include "lwip/priv/tcpip_priv.h"
 #include "lwip/netif.h"
+#include "netif/bridgeif.h"
 #if LWIP_DNS /* don't build if not configured for use in lwipopts.h */
 #include "lwip/dns.h"
 #endif
@@ -296,7 +297,19 @@ esp_netif_t* esp_netif_get_handle_from_netif_impl(void *dev)
 {
     // ppp_pcb ptr would never get to app code, so this function only works with vanilla lwip impl
     struct netif *lwip_netif = dev;
-    return lwip_netif->state;
+    // bridge lwip netif uses "state" member for something different => need to traverse all esp_netifs
+    if (lwip_netif->name[0] == 'b' && lwip_netif->name[1] == 'r') {
+        esp_netif_t* esp_netif = esp_netif_next(NULL);
+        do
+        {
+            if(esp_netif->lwip_netif == lwip_netif) {
+                return esp_netif;
+            }
+        } while ((esp_netif = esp_netif_next(esp_netif)) != NULL);
+    } else {
+        return lwip_netif->state;
+    }
+    return NULL;
 }
 
 void* esp_netif_get_netif_impl(esp_netif_t *esp_netif)
@@ -566,12 +579,31 @@ static esp_err_t esp_netif_lwip_add(esp_netif_t *esp_netif)
         LOG_NETIF_DISABLED_AND_DO("PPP", return ESP_ERR_NOT_SUPPORTED);
 #endif
     }
-
-    if (NULL == netif_add(esp_netif->lwip_netif, (struct ip4_addr*)&esp_netif->ip_info->ip,
-                         (struct ip4_addr*)&esp_netif->ip_info->netmask, (struct ip4_addr*)&esp_netif->ip_info->gw,
-                         esp_netif, esp_netif->lwip_init_fn, tcpip_input)) {
-        esp_netif_lwip_remove(esp_netif);
-        return ESP_ERR_ESP_NETIF_IF_NOT_READY;
+    if (esp_netif->flags & ESP_NETIF_FLAG_BRIDGE) {
+        bridgeif_initdata_t bridge_initdata = {
+            .ethaddr.addr = { 0 },
+            .max_fdb_dynamic_entries = 4,
+            .max_fdb_static_entries = 1,
+            .max_ports = 2
+        };
+        memcpy(&bridge_initdata.ethaddr, esp_netif->mac, ETH_ADDR_LEN);
+        netif_add(esp_netif->lwip_netif, (struct ip4_addr*)&esp_netif->ip_info->ip, (struct ip4_addr*)&esp_netif->ip_info->netmask,
+                        (struct ip4_addr*)&esp_netif->ip_info->gw, &bridge_initdata, esp_netif->lwip_init_fn, tcpip_input);
+        //struct eth_addr brdcast = ETH_ADDR(0xff, 0xff, 0xff, 0xff, 0xff, 0xff);
+        //int ret = bridgeif_fdb_add(esp_netif->lwip_netif, &brdcast, 1 << BRIDGEIF_MAX_PORTS);
+    } else if (esp_netif->flags & ESP_NETIF_FLAG_PORT_BE_BRIDGED) {
+        if (NULL == netif_add(esp_netif->lwip_netif, NULL, NULL, NULL,
+                            esp_netif, esp_netif->lwip_init_fn, tcpip_input)) {
+            esp_netif_lwip_remove(esp_netif);
+            return ESP_ERR_ESP_NETIF_IF_NOT_READY;
+        }
+    } else {
+        if (NULL == netif_add(esp_netif->lwip_netif, (struct ip4_addr*)&esp_netif->ip_info->ip,
+                            (struct ip4_addr*)&esp_netif->ip_info->netmask, (struct ip4_addr*)&esp_netif->ip_info->gw,
+                            esp_netif, esp_netif->lwip_init_fn, tcpip_input)) {
+            esp_netif_lwip_remove(esp_netif);
+            return ESP_ERR_ESP_NETIF_IF_NOT_READY;
+        }
     }
     return ESP_OK;
 }
@@ -674,6 +706,14 @@ esp_err_t esp_netif_get_mac(esp_netif_t *esp_netif, uint8_t mac[])
         return ESP_OK;
     }
     memcpy(mac, esp_netif->mac, NETIF_MAX_HWADDR_LEN);
+    return ESP_OK;
+}
+
+esp_err_t esp_netif_add_port_bridge(esp_netif_t *esp_netif_br, esp_netif_t *esp_netif_port)
+{
+    if (ERR_OK != bridgeif_add_port(esp_netif_br->lwip_netif, esp_netif_port->lwip_netif)) {
+        return ESP_FAIL;
+    }
     return ESP_OK;
 }
 
@@ -786,9 +826,8 @@ static esp_err_t esp_netif_config_sanity_check(const esp_netif_t * esp_netif)
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (esp_netif->driver_transmit == NULL ||
-        esp_netif->driver_handle == NULL ||
-        esp_netif->lwip_input_fn == NULL ||
+    if ((!(esp_netif->flags & ESP_NETIF_FLAG_BRIDGE) && (esp_netif->driver_transmit == NULL ||
+        esp_netif->driver_handle == NULL || esp_netif->lwip_input_fn == NULL)) ||
         esp_netif->lwip_init_fn == NULL) {
         ESP_LOGE(TAG,  "Cannot start esp_netif: Missing mandatory configuration:\n"
                        "esp_netif->driver_transmit: %p, esp_netif->driver_handle:%p, "

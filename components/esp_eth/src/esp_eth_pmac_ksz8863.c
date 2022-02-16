@@ -431,6 +431,14 @@ static esp_err_t pmac_ksz8863_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_
     uint32_t cycl2 = cpu_hal_get_cycle_count();
     printf("tx cycles: %u\n", cycl2 - cycl1);
 #else
+    if (buf[6] == 0x70 && buf[7] == 0x85 && buf[8] == 0xc2) {
+        printf("ASrock\n");
+        for (int i = 0; i < 6; i++) {
+            printf("%02x:", buf[i]);
+        }
+        printf("\n");
+    }
+
     //uint32_t cycl1 = cpu_hal_get_cycle_count();
     // Add padding bytes for frames shorter than 60 bytes since Tail tag needs to be placed at the end of the frame
     if (length < ETH_HEADER_LEN + ETH_MIN_PAYLOAD_LEN) {
@@ -540,11 +548,11 @@ esp_eth_mac_t *esp_eth_mac_new_ksz8863(/*const eth_ksz8863_config_t *ksz8863_con
     }
     emac->port = port;
     emac->host_mac = host_mac;
-    if (host_mac == NULL) {
+    //if (host_mac == NULL) {
         emac->mode = KSZ8863_SWITCH_MODE;
-    } else {
-        emac->mode = KSZ8863_PORT_MODE;
-    }
+    //} else {
+        //emac->mode = KSZ8863_PORT_MODE;
+    //}
 
     struct slist_mac_ksz8863_s *pmac_instance = calloc(1, sizeof(struct slist_mac_ksz8863_s));
     ESP_GOTO_ON_FALSE(pmac_instance, NULL, err, TAG, "calloc pmac_instance failed");

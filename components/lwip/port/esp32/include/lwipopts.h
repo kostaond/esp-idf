@@ -20,6 +20,7 @@
 #include "netif/dhcp_state.h"
 #include "sntp/sntp_get_set_time.h"
 
+#define LWIP_NUM_NETIF_CLIENT_DATA 1 //TODO: make Kconfig
 
 /*
    -----------------------------------------------
