@@ -38,8 +38,9 @@
 #include "arpa/inet.h" // for ntohs, etc.
 
 #include "esp_eth_ksz8863.h"
+#include "esp_eth_netif_glue_ksz8863.h"
 
-static const char *TAG = "eth_example";
+static const char *TAG = "ksz8863_eth_example";
 
 /** Event handler for Ethernet events */
 static void eth_event_handler(void *arg, esp_event_base_t event_base,
@@ -114,7 +115,7 @@ static test_vfs_eth_tap_msg_t s_test_msg = {
         .dest.addr = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF },
         .type = 0x7000,
     },
-    .str = "This is ESP32 L2 TAP test msg"
+    .str = "This is ESP32 L2 TAP test msg from Port: "
 };
 
 esp_err_t i2c_init(i2c_port_t i2c_master_port, i2c_config_t *i2c_conf)
@@ -189,15 +190,16 @@ esp_err_t ksz8863_board_specific_init(esp_eth_handle_t eth_handle)
     ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_internal_clk(eth_handle, true), err, TAG, "P3 internal clk config failed");
 #endif
 
-#if XXX // TODO: add to Kconfig
+#if CONFIG_EXAMPLE_P3_RMII_CLKI_INVERT // TODO: add to Kconfig
     ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_clk_invert(eth_handle, true), err, TAG, "P3 invert ckl failed");
 #endif
 err:
     return ret;
 }
 
-#define SWITCH_BRIDGE 1
+//TODO:
 extern esp_eth_netif_glue_handle_t esp_eth_new_netif_glue_br(esp_eth_handle_t eth_hdl);
+
 void app_main(void)
 {
     // Initialize TCP/IP network interface (should be called only once in application)
@@ -213,35 +215,42 @@ void app_main(void)
     mac_config.smi_mdc_gpio_num = -1; // MIIM interface is not used since does not provide access to all registers
     mac_config.smi_mdio_gpio_num = -1;
 
-#if PORT_MODE
-    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
-    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_1);
-    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_2);
+#if CONFIG_EXAMPLE_PORT_MODE
+    ESP_LOGW(TAG, "runs in Two Port endpoints mode...\n");
 
+    // Init Host Ethernet Interface (Port 3)
+    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
     phy_config.phy_addr = -1; // this PHY is entry point to host
     esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 0; // this PHY is Port 1
-    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 1; // this PHY is Port 2
-    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
     esp_eth_config_t host_config = ETH_KSZ8863_DEFAULT_CONFIG(host_mac, host_phy);
     host_config.on_lowlevel_init_done = ksz8863_board_specific_init;
     esp_eth_handle_t host_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&host_config, &host_eth_handle));
 
+    // Init P1 Ethernet Interface
+    ksz8863_eth_mac_config_t ksz8863_pmac_config = {
+        .host_eth_handle = host_eth_handle,
+        .pmac_mode = KSZ8863_PORT_MODE,
+        .port_num = KSZ8863_PORT_1,
+    };
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 0; // this PHY is Port 1
+    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
     esp_eth_config_t p1_config = ETH_KSZ8863_DEFAULT_CONFIG(p1_mac, p1_phy);
     esp_eth_handle_t p1_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&p1_config, &p1_eth_handle));
 
+    // Init P2 Ethernet Interface
+    ksz8863_pmac_config.port_num = KSZ8863_PORT_2;
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 1; // this PHY is Port 2
+    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
     esp_eth_config_t p2_config = ETH_KSZ8863_DEFAULT_CONFIG(p2_mac, p2_phy);
     esp_eth_handle_t p2_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&p2_config, &p2_eth_handle));
-
-    ksz8863_register_port_hndl(p1_eth_handle, 0);
-    ksz8863_register_port_hndl(p2_eth_handle, 1);
-    // Make "host eth" decide where to forward traffic
-    esp_eth_update_input_path(host_eth_handle, ksz8863_port_forward, NULL);
 
     // KSZ8863 Ports 1/2 does not have any default MAC
     ESP_ERROR_CHECK(esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
@@ -250,6 +259,17 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_eth_ioctl(p2_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
             0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x01
     }));
+
+    bool enable = true;
+    esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_AUTONEGO, &enable); // specific to our board (boot strap issue on GPIO0)
+
+    // Internal EMAC needs to receive frames from other KSZ8863 ports => do not perform any filterring
+    esp_eth_ioctl(host_eth_handle, ETH_CMD_S_PROMISCUOUS, &enable);
+
+    ksz8863_register_tail_tag_port(p1_eth_handle, 0);
+    ksz8863_register_tail_tag_port(p2_eth_handle, 1);
+    // Make "host eth" decide where to forward traffic
+    esp_eth_update_input_path(host_eth_handle, ksz8863_tail_tag_port_forward, NULL);
 
     // Create instance(s) of esp-netif for Port1 & Port 2 Ethernets
     esp_netif_inherent_config_t esp_netif_config = ESP_NETIF_INHERENT_DEFAULT_ETH();
@@ -277,38 +297,44 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
 
-    bool enable = true;
-    esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_AUTONEGO, &enable); // specific to our board (boot strap issue on GPIO0)
-
-    // Internal EMAC needs to receive frames from other KSZ8863 ports => do not perform any filterring
-    esp_eth_ioctl(host_eth_handle, ETH_CMD_S_PROMISCUOUS, &enable);
-
     // start Ethernet driver state machines
     ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
     ESP_ERROR_CHECK(esp_eth_start(p1_eth_handle));
     ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle));
-#elif SWITCH_SIMPLE
+#elif CONFIG_EXAMPLE_SWITCH_SIMPLE
 // TODO add description
 // very efficient & simple, no tail tagging
-    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
-    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, NULL, KSZ8863_PORT_1);
-    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, NULL, KSZ8863_PORT_2);
+    ESP_LOGW(TAG, "runs in Simple Switch mode...\n");
 
+    // Init Host Ethernet Interface (Port 3)
+    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
     phy_config.phy_addr = -1; // this PHY is entry point to host
     esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 0; // this PHY is Port 1
-    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 1; // this PHY is Port 2
-    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
     esp_eth_config_t host_config = ETH_KSZ8863_DEFAULT_CONFIG(host_mac, host_phy);
     host_config.on_lowlevel_init_done = ksz8863_board_specific_init;
     esp_eth_handle_t host_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&host_config, &host_eth_handle));
 
+    // Init P1 Ethernet Interface
+    ksz8863_eth_mac_config_t ksz8863_pmac_config = {
+        .host_eth_handle = host_eth_handle,
+        .pmac_mode = KSZ8863_SWITCH_MODE,
+        .port_num = KSZ8863_PORT_1,
+    };
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 0; // this PHY is Port 1
+    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
     esp_eth_config_t p1_config = ETH_KSZ8863_DEFAULT_CONFIG(p1_mac, p1_phy);
     esp_eth_handle_t p1_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&p1_config, &p1_eth_handle));
+
+    // Init P2 Ethernet Interface
+    ksz8863_pmac_config.port_num = KSZ8863_PORT_2;
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 1; // this PHY is Port 2
+    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
     esp_eth_config_t p2_config = ETH_KSZ8863_DEFAULT_CONFIG(p2_mac, p2_phy);
     esp_eth_handle_t p2_eth_handle = NULL;
@@ -330,29 +356,40 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
     ESP_ERROR_CHECK(esp_eth_start(p1_eth_handle)); // p1/2_eth_handle are going to be used basically only for Link Status indication and for configuration access
     ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle));
-#elif SWITCH_BRIDGE
+#elif CONFIG_EXAMPLE_SWITCH_BRIDGE
 // TODO: description
 // problems with broadcast/multicast, lwip br is not efficient
+    ESP_LOGW(TAG, "runs in Simple lwip bridge mode...\n");
 
+    // Init Host Ethernet Interface (Port 3)
     esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
-    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_1);
-    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_2);
-
     phy_config.phy_addr = -1; // this PHY is entry point to host
     esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 0; // this PHY is Port 1
-    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 1; // this PHY is Port 2
-    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
     esp_eth_config_t host_config = ETH_KSZ8863_DEFAULT_CONFIG(host_mac, host_phy);
     host_config.on_lowlevel_init_done = ksz8863_board_specific_init;
     esp_eth_handle_t host_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&host_config, &host_eth_handle));
 
+    // Init P1 Ethernet Interface
+    ksz8863_eth_mac_config_t ksz8863_pmac_config = {
+        .host_eth_handle = host_eth_handle,
+        .pmac_mode = KSZ8863_SWITCH_MODE,
+        .port_num = KSZ8863_PORT_1,
+    };
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 0; // this PHY is Port 1
+    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
     esp_eth_config_t p1_config = ETH_KSZ8863_DEFAULT_CONFIG(p1_mac, p1_phy);
     esp_eth_handle_t p1_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&p1_config, &p1_eth_handle));
+
+    // Init P2 Ethernet Interface
+    ksz8863_pmac_config.port_num = KSZ8863_PORT_2;
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 1; // this PHY is Port 2
+    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
     esp_eth_config_t p2_config = ETH_KSZ8863_DEFAULT_CONFIG(p2_mac, p2_phy);
     esp_eth_handle_t p2_eth_handle = NULL;
@@ -410,9 +447,9 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_attach(br_netif, esp_eth_new_netif_glue_br(host_eth_handle)));
 
     // Make "host eth" decide where to forward traffic
-    ksz8863_register_port_hndl(p1_eth_handle, 0);
-    ksz8863_register_port_hndl(p2_eth_handle, 1);
-    esp_eth_update_input_path(host_eth_handle, ksz8863_port_forward, NULL);
+    ksz8863_register_tail_tag_port(p1_eth_handle, 0);
+    ksz8863_register_tail_tag_port(p2_eth_handle, 1);
+    esp_eth_update_input_path(host_eth_handle, ksz8863_tail_tag_port_forward, NULL);
 
     // Register user defined event handers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
@@ -432,50 +469,63 @@ void app_main(void)
     esp_netif_add_port_bridge(br_netif, eth_netif_port[0]);
     esp_netif_add_port_bridge(br_netif, eth_netif_port[1]);
 
-#else
-    /*esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
-    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_1);
-    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, host_mac, KSZ8863_PORT_2);
+#elif CONFIG_EXAMPLE_SWITCH_TAIL_TAG
+    ESP_LOGW(TAG, "runs in Switch with Tail Tagging mode...\n");
 
+    // Init Host Ethernet Interface (Port 3)
+    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&mac_config);
     phy_config.phy_addr = -1; // this PHY is entry point to host
     esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 0; // this PHY is Port 1
-    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
-    phy_config.phy_addr = 1; // this PHY is Port 2
-    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
     esp_eth_config_t host_config = ETH_KSZ8863_DEFAULT_CONFIG(host_mac, host_phy);
     host_config.on_lowlevel_init_done = ksz8863_board_specific_init;
     esp_eth_handle_t host_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&host_config, &host_eth_handle));
 
+    // Init P1 Ethernet Interface
+    ksz8863_eth_mac_config_t ksz8863_pmac_config = {
+        .host_eth_handle = host_eth_handle,
+        .pmac_mode = KSZ8863_SWITCH_MODE,
+        .port_num = KSZ8863_PORT_1,
+    };
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 0; // this PHY is Port 1
+    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
     esp_eth_config_t p1_config = ETH_KSZ8863_DEFAULT_CONFIG(p1_mac, p1_phy);
     esp_eth_handle_t p1_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&p1_config, &p1_eth_handle));
+
+    // Init P2 Ethernet Interface
+    ksz8863_pmac_config.port_num = KSZ8863_PORT_2;
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&mac_config, &ksz8863_pmac_config);
+    phy_config.phy_addr = 1; // this PHY is Port 2
+    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
     esp_eth_config_t p2_config = ETH_KSZ8863_DEFAULT_CONFIG(p2_mac, p2_phy);
     esp_eth_handle_t p2_eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&p2_config, &p2_eth_handle));
 
-    // KSZ8863 Ports 1/2 does not have any default MAC
-    ESP_ERROR_CHECK(esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
+    bool enable = true;
+    esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_AUTONEGO, &enable); // specific to our board (boot strap issue on GPIO0)
+
+    esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_S_TAIL_TAG, &enable);
+
+    // KSZ8863 Ports 1/2 does not have any default MAC and not necessary need any TODO
+    /*ESP_ERROR_CHECK(esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
             0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x00
     }));
     ESP_ERROR_CHECK(esp_eth_ioctl(p2_eth_handle, ETH_CMD_S_MAC_ADDR, (uint8_t[]) {
             0x8c, 0x4b, 0x14, 0x0a, 0x14, 0x01
-    }));
+    }));*/
 
-    // Create new default instance of esp-netif for Host Ethernet Port (P3)
-    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
-    esp_netif_t *eth_netif = esp_netif_new(&cfg);
-    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(host_eth_handle)));
-    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(host_eth_handle)));
-
-    // Create instance(s) of esp-netif for Port1 & Port 2 Ethernets
+    // Create instance(s) of esp-netif for Port1 & Port 2 Ethernets without association to IP stack.
+    // This is done to be able to access the Port 1/2 interfaces using L2 TAP and so make KSZ Tail Tagging available for user.
+    // Note that normal address lookup is used for IP traffic (associated with default eth_netif)
     esp_netif_inherent_config_t esp_netif_config = ESP_NETIF_INHERENT_DEFAULT_ETH();
     esp_netif_config_t netif_cfg = {
         .base = &esp_netif_config,
-        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
+        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH // TODO: for this type of netif, it will not be used but now it is needed for init
     };
     esp_netif_t *eth_netif_port[2] = { NULL };
     char if_key_str[10];
@@ -494,29 +544,36 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_attach(eth_netif_port[0], esp_eth_new_netif_glue(p1_eth_handle)));
     ESP_ERROR_CHECK(esp_netif_attach(eth_netif_port[1], esp_eth_new_netif_glue(p2_eth_handle)));
 
-    // Make "host eth" decide where to forward traffic
-    ksz8863_register_port_hndl(p1_eth_handle, 0);
-    ksz8863_register_port_hndl(p2_eth_handle, 1);
-    esp_eth_update_input_path(host_eth_handle, ksz8863_port_forward, NULL);
+    // Create new default instance of esp-netif which is associated with IP stack
+    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *eth_netif = esp_netif_new(&cfg);
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif,
+                                     ksz8863_esp_eth_new_netif_glue_switch(
+                                                    host_eth_handle,
+                                                    p1_eth_handle,
+                                                    eth_netif_port[0],
+                                                    p2_eth_handle,
+                                                    eth_netif_port[1])));
 
     // Register user defined event handers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
 
-    bool enable = true;
-    esp_eth_ioctl(p1_eth_handle, ETH_CMD_S_AUTONEGO, &enable); // specific to our board (boot strap issue on GPIO0)
-
-    esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_S_TAIL_TAG, &enable);
-
     // start Ethernet driver state machines
     ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
     ESP_ERROR_CHECK(esp_eth_start(p1_eth_handle));
     ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle));
-
-    esp_netif_highjack_input(eth_netif, eth_netif_port[0]);
-    esp_netif_highjack_input(eth_netif, eth_netif_port[1]);*/
 #endif
 
+    // TODO: For Switch with TT. When Host Ethernet interface is stopped, P1/P2 needs to be stopped and started too to work properly again. It does not
+    // apply when P1 or P2 is stopped though (no need to restart Host Eth). This needs to be either resolved or documented.
+    /*vTaskDelay(pdMS_TO_TICKS(5000));
+    ESP_ERROR_CHECK(esp_eth_stop(host_eth_handle));
+    ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
+    //ESP_ERROR_CHECK(esp_eth_stop(p2_eth_handle));
+    //ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle)); */
+
+#ifdef TEST_MAC_ACCESS
     ksz8863_dyn_mac_table_t dyn_mac_tbls[5];
     ksz8863_mac_tbl_info_t get_tbl_info ={
         .start_entry = 0,
@@ -536,11 +593,11 @@ void app_main(void)
         .etries_num = 1,
         .sta_tbls = &sta_mac_tbl,
     };
-    /*sta_mac_tbl.fwd_ports = 1 << 2;
+    sta_mac_tbl.fwd_ports = 1 << 2;
     sta_mac_tbl.entry_val = 1;
     memset(sta_mac_tbl.mac_addr, 0xff, 6);
     sta_mac_tbl.mac_addr[0] = 0x01;
-    esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_S_MAC_STA_TBL, &set_sta_tbl_info);*/
+    esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_S_MAC_STA_TBL, &set_sta_tbl_info);
 
     while (1) {
         esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_G_MAC_DYN_TBL, &get_tbl_info);
@@ -551,43 +608,58 @@ void app_main(void)
         }
         printf("\n");
 
-        /*ESP_LOGI(TAG, "static MAC");
+        ESP_LOGI(TAG, "static MAC");
         esp_eth_ioctl(p1_eth_handle, KSZ8863_ETH_CMD_G_MAC_STA_TBL, &get_sta_tbl_info);
         ESP_LOGI(TAG, "fwd port %d", sta_mac_tbls[0].fwd_ports);
         ESP_LOG_BUFFER_HEX(TAG, sta_mac_tbls[0].mac_addr, 6);
 
         ESP_LOGI(TAG, "fwd port %d", sta_mac_tbls[1].fwd_ports);
         ESP_LOG_BUFFER_HEX(TAG, sta_mac_tbls[1].mac_addr, 6);
-        printf("\n");*/
+        printf("\n");
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
-/*
+#endif
+
+#ifdef TEST_L2_TAIL_TAG
     esp_vfs_l2tap_intf_register(NULL);
     int ret;
-    int eth_tap_fd = open("/dev/net/tap", O_NONBLOCK);
+    int eth_tap_fd_p1 = open("/dev/net/tap", O_NONBLOCK);
+    int eth_tap_fd_p2 = open("/dev/net/tap", O_NONBLOCK);
     uint16_t eth_type_filter = 0x7000;
-    if ((ret = ioctl(eth_tap_fd, L2TAP_S_RCV_FILTER, &eth_type_filter)) == -1) {
-        ESP_LOGE(TAG, "filter error %d", errno);
+    if ((ret = ioctl(eth_tap_fd_p1, L2TAP_S_RCV_FILTER, &eth_type_filter)) == -1) {
+        ESP_LOGE(TAG, "filter1 error %d", errno);
+    }
+    if ((ret = ioctl(eth_tap_fd_p2, L2TAP_S_RCV_FILTER, &eth_type_filter)) == -1) {
+        ESP_LOGE(TAG, "filter2 error %d", errno);
     }
     // Set Ethernet interface on which to get raw frames
-    if ((ret = ioctl(eth_tap_fd, L2TAP_S_INTF_DEVICE, "ETH_0")) == -1) {
-        ESP_LOGE(TAG, "dev set error %d", errno);
+    if ((ret = ioctl(eth_tap_fd_p1, L2TAP_S_INTF_DEVICE, "ETH_0")) == -1) {
+        ESP_LOGE(TAG, "dev set1 error %d", errno);
+    }
+    if ((ret = ioctl(eth_tap_fd_p2, L2TAP_S_INTF_DEVICE, "ETH_1")) == -1) {
+        ESP_LOGE(TAG, "dev set2 error %d", errno);
     }
 
-    uint8_t p1_mac_addr[6];
-    if ((ret = esp_eth_ioctl(p1_eth_handle, ETH_CMD_G_MAC_ADDR, p1_mac_addr)) == -1) {
+    uint8_t dev_mac_addr[6];
+    if ((ret = esp_eth_ioctl(p1_eth_handle, ETH_CMD_G_MAC_ADDR, dev_mac_addr)) == -1) {
         ESP_LOGE(TAG, "get MAC addr error");
     }
     s_test_msg.header.type = htons(eth_type_filter);
-    memcpy(s_test_msg.header.src.addr, p1_mac_addr, 6);
+    memcpy(s_test_msg.header.src.addr, dev_mac_addr, 6);
+    int len = strlen(s_test_msg.str);
     while (1) {
-        ret = write(eth_tap_fd, &s_test_msg, sizeof(s_test_msg));
-        printf("send B: %d\n", ret);
+        s_test_msg.str[len] = '1';
+        ret = write(eth_tap_fd_p1, &s_test_msg, sizeof(s_test_msg));
         if (ret == -1) {
-            printf("errno: %d\n", errno);
+            printf("P1 tap errno: %d\n", errno);
+        }
+        s_test_msg.str[len] = '2';
+        ret = write(eth_tap_fd_p2, &s_test_msg, sizeof(s_test_msg));
+        if (ret == -1) {
+            printf("P2 tap errno: %d\n", errno);
         }
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
-*/
+#endif
     //i2c_driver_delete(I2C_MASTER_PORT);
 }

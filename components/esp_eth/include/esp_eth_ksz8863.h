@@ -49,10 +49,15 @@ typedef struct
     };
 } ksz8863_mac_tbl_info_t;
 
-esp_err_t ksz8863_sw_reset(esp_eth_handle_t eth_handle);
+esp_err_t ksz8863_sw_reset(esp_eth_handle_t port_eth_handle);
 esp_err_t ksz8863_hw_reset(int reset_gpio_num);
-esp_err_t ksz8863_p3_rmii_internal_clk(esp_eth_handle_t eth_handle, bool rmii_internal_clk);
-esp_err_t ksz8863_p3_rmii_clk_invert(esp_eth_handle_t eth_handle, bool rmii_clk_invert);
+esp_err_t ksz8863_p3_rmii_internal_clk(esp_eth_handle_t port_eth_handle, bool rmii_internal_clk);
+esp_err_t ksz8863_p3_rmii_clk_invert(esp_eth_handle_t port_eth_handle, bool rmii_clk_invert);
 
-esp_err_t ksz8863_register_port_hndl(esp_eth_handle_t port_eth_handle, int32_t port_num);
-esp_err_t ksz8863_port_forward(esp_eth_handle_t host_eth_handle, uint8_t *buffer, uint32_t length, void *priv);
+esp_err_t ksz8863_register_tail_tag_port(esp_eth_handle_t port_eth_handle, int32_t port_num);
+esp_err_t ksz8863_tail_tag_port_forward(esp_eth_handle_t host_eth_handle, uint8_t *buffer, uint32_t length, void *priv);
+
+esp_err_t ksz8863_eth_transmit_normal_lookup(esp_eth_handle_t host_eth_handle, void *buf, size_t length);
+
+// TODO: consider making it static somehow
+esp_err_t ksz8863_eth_transmit_tag(esp_eth_handle_t host_eth_handle, void *buf, size_t length, uint8_t tail_tag);

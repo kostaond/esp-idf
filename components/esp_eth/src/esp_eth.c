@@ -337,6 +337,26 @@ err:
     return ret;
 }
 
+esp_err_t esp_eth_transmit_special(esp_eth_handle_t hdl, uint32_t argc, ...)
+{
+    esp_err_t ret = ESP_OK;
+    esp_eth_driver_t *eth_driver = (esp_eth_driver_t *)hdl;
+
+    if (atomic_load(&eth_driver->fsm) != ESP_ETH_FSM_START) {
+        ret = ESP_ERR_INVALID_STATE;
+        ESP_LOGD(TAG, "Ethernet is not started");
+        goto err;
+    }
+
+    va_list args;
+    esp_eth_mac_t *mac = eth_driver->mac;
+    va_start(args, argc);
+    ret = mac->transmit_special(mac, argc, args);
+    va_end(args);
+err:
+    return ret;
+}
+
 esp_err_t esp_eth_receive(esp_eth_handle_t hdl, uint8_t *buf, uint32_t *length)
 {
     esp_err_t ret = ESP_OK;

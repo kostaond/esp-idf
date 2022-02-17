@@ -115,7 +115,7 @@ struct esp_eth_mac_s {
     *      - ESP_OK: transmit packet successfully
     *      - ESP_FAIL: transmit packet failed because some other error occurred
     */
-    esp_err_t (*transmit_special)(esp_eth_mac_t *mac, uint32_t argc, ...);
+    esp_err_t (*transmit_special)(esp_eth_mac_t *mac, uint32_t argc, va_list args);
 
     /**
     * @brief Receive packet from Ethernet MAC
@@ -391,6 +391,19 @@ typedef struct {
     eth_mac_clock_config_t clock_config; /*!< EMAC Interface clock configuration */
 } eth_mac_config_t;
 
+// TODO: fix per master, maybe move to some KSZ specific header??
+typedef enum
+{
+    KSZ8863_SWITCH_MODE,
+    KSZ8863_PORT_MODE
+} pmac_ksz8863_mode_t;
+
+typedef struct {
+    /*esp_eth_handle_t*/void *host_eth_handle;
+    int port_num;
+    pmac_ksz8863_mode_t pmac_mode;
+} ksz8863_eth_mac_config_t;
+
 #define ETH_MAC_FLAG_WORK_WITH_CACHE_DISABLE (1 << 0) /*!< MAC driver can work when cache is disabled */
 #define ETH_MAC_FLAG_PIN_TO_CORE (1 << 1)             /*!< Pin MAC task to the CPU core where driver installation happened */
 
@@ -542,7 +555,8 @@ esp_eth_mac_t *esp_eth_mac_new_ksz8851snl(const eth_ksz8851snl_config_t *ksz8851
 esp_eth_mac_t *esp_eth_mac_new_openeth(const eth_mac_config_t *config);
 #endif // CONFIG_ETH_USE_OPENETH
 
-esp_eth_mac_t *esp_eth_mac_new_ksz8863(const eth_mac_config_t *mac_config, esp_eth_mac_t *switch_mac, int port);
+// TODO: description
+esp_eth_mac_t *esp_eth_mac_new_ksz8863(const eth_mac_config_t *mac_config, const ksz8863_eth_mac_config_t *ksz8863_config);
 
 #ifdef __cplusplus
 }

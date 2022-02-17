@@ -35,12 +35,6 @@
 
 static const char *TAG = "ksz8863_mac";
 
-typedef enum
-{
-    KSZ8863_SWITCH_MODE,
-    KSZ8863_PORT_MODE
-} pmac_ksz8863_mode_t;
-
 typedef struct {
     esp_eth_mac_t parent;
     esp_eth_mediator_t *eth;
@@ -49,7 +43,7 @@ typedef struct {
     bool flow_ctrl_enabled;
     int32_t port;
     uint8_t port_reg_offset;
-    esp_eth_mac_t *host_mac;
+    esp_eth_handle_t host_eth_handle;
     uint32_t status;
 } pmac_ksz8863_t;
 
@@ -430,33 +424,16 @@ static esp_err_t pmac_ksz8863_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_
     free(buff_tail);
     uint32_t cycl2 = cpu_hal_get_cycle_count();
     printf("tx cycles: %u\n", cycl2 - cycl1);
-#else
-    if (buf[6] == 0x70 && buf[7] == 0x85 && buf[8] == 0xc2) {
-        printf("ASrock\n");
-        for (int i = 0; i < 6; i++) {
-            printf("%02x:", buf[i]);
-        }
-        printf("\n");
-    }
-
-    //uint32_t cycl1 = cpu_hal_get_cycle_count();
-    // Add padding bytes for frames shorter than 60 bytes since Tail tag needs to be placed at the end of the frame
-    if (length < ETH_HEADER_LEN + ETH_MIN_PAYLOAD_LEN) {
-        uint32_t tail_len = ETH_HEADER_LEN + ETH_MIN_PAYLOAD_LEN - length + 1;
-        uint8_t *buff_tail = calloc(1, tail_len);
-        ESP_GOTO_ON_FALSE(buff_tail, ESP_ERR_NO_MEM, err, TAG, "no memory");
-        buff_tail[tail_len - 1] = emac->port + 1;
-        emac->host_mac->transmit_special(emac->host_mac, 2, buf, length, buff_tail, tail_len);
-        free(buff_tail);
-    } else {
-        uint8_t port = emac->port + 1;
-        emac->host_mac->transmit_special(emac->host_mac, 2, buf, length, &port, 1);
-    }
-    //uint32_t cycl2 = cpu_hal_get_cycle_count();
-    //printf("tx cycles: %u\n", cycl2 - cycl1);
-#endif
 err:
     return ret;
+#else
+    //uint32_t cycl1 = cpu_hal_get_cycle_count();
+    // ESP32 Ethernet Interface (host) is used to access KSZ8863
+    ret = ksz8863_eth_transmit_tag(emac->host_eth_handle, buf, length, emac->port + 1);
+    //uint32_t cycl2 = cpu_hal_get_cycle_count();
+    //printf("tx cycles: %u\n", cycl2 - cycl1);
+    return ret;
+#endif
 }
 
 static esp_err_t emac_ksz8863_receive(esp_eth_mac_t *mac, uint8_t *buf, uint32_t *length)
@@ -510,7 +487,7 @@ static esp_err_t emac_ksz8863_del(esp_eth_mac_t *mac)
     return ESP_OK;
 }
 
-esp_eth_mac_t *esp_eth_mac_new_ksz8863(/*const eth_ksz8863_config_t *ksz8863_config*/ const eth_mac_config_t *mac_config, esp_eth_mac_t *host_mac, int port)
+esp_eth_mac_t *esp_eth_mac_new_ksz8863(const eth_mac_config_t *mac_config, const ksz8863_eth_mac_config_t *ksz8863_config)
 {
     esp_eth_mac_t *ret = NULL;
     pmac_ksz8863_t *emac = NULL;
@@ -541,18 +518,15 @@ esp_eth_mac_t *esp_eth_mac_new_ksz8863(/*const eth_ksz8863_config_t *ksz8863_con
     emac->parent.transmit = pmac_ksz8863_transmit;
     emac->parent.receive = emac_ksz8863_receive;
 
-    if (port == KSZ8863_PORT_1) {
+    emac->port = ksz8863_config->port_num;
+    emac->host_eth_handle = ksz8863_config->host_eth_handle;
+    emac->mode = ksz8863_config->pmac_mode;
+
+    if (emac->port == KSZ8863_PORT_1) {
         emac->port_reg_offset = KSZ8863_PORT1_ADDR_OFFSET;
-    } else if (port == KSZ8863_PORT_2) {
+    } else if (emac->port == KSZ8863_PORT_2) {
         emac->port_reg_offset = KSZ8863_PORT2_ADDR_OFFSET;
     }
-    emac->port = port;
-    emac->host_mac = host_mac;
-    //if (host_mac == NULL) {
-        emac->mode = KSZ8863_SWITCH_MODE;
-    //} else {
-        //emac->mode = KSZ8863_PORT_MODE;
-    //}
 
     struct slist_mac_ksz8863_s *pmac_instance = calloc(1, sizeof(struct slist_mac_ksz8863_s));
     ESP_GOTO_ON_FALSE(pmac_instance, NULL, err, TAG, "calloc pmac_instance failed");

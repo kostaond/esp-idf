@@ -249,6 +249,9 @@ esp_err_t esp_eth_update_input_path(
 */
 esp_err_t esp_eth_transmit(esp_eth_handle_t hdl, void *buf, size_t length);
 
+// TODO: add description
+esp_err_t esp_eth_transmit_special(esp_eth_handle_t hdl, uint32_t argc, ...);
+
 /**
 * @brief General Receive is deprecated and shall not be accessed from app code,
 *        as polling is not supported by Ethernet.

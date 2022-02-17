@@ -1066,6 +1066,13 @@ esp_err_t esp_netif_receive(esp_netif_t *esp_netif, void *buffer, size_t len, vo
     return ESP_OK;
 }
 
+esp_err_t esp_netif_forward_input(esp_netif_t *esp_netif_sw, esp_netif_t *esp_netif_port)
+{
+    esp_netif_port->netif_handle = esp_netif_sw->netif_handle;
+    esp_netif_port->lwip_input_fn = esp_netif_sw->lwip_input_fn;
+    return ESP_OK;
+}
+
 //
 // DHCP:
 //

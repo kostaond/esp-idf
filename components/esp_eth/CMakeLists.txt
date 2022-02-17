@@ -28,7 +28,8 @@ if(CONFIG_ETH_ENABLED)
                          "src/esp_eth_ksz8863.c"
                          "src/ksz8863_ctrl.c"
                          "src/esp_eth_phy_ksz8863.c"
-                         "src/esp_eth_pmac_ksz8863.c")
+                         "src/esp_eth_pmac_ksz8863.c"
+                         "src/esp_eth_netif_glue_ksz8863.c")
     endif()
 
     if(CONFIG_ETH_SPI_ETHERNET_DM9051)

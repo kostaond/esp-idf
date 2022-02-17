@@ -8,6 +8,34 @@ menu "Example Configuration"
         int
         default 33 if IDF_TARGET_ESP32
 
+    choice  EXAMPLE_TYPE
+        prompt "Choose example type"
+        default EXAMPLE_SWITCH_TAIL_TAG
+        help
+            Select type of example (Two endpoint ports).
+
+        config EXAMPLE_PORT_MODE
+            bool "Two Endpoint Ports Mode"
+            help
+                TODO
+
+        config EXAMPLE_SWITCH_SIMPLE
+            bool "Simple Switch Mode without Tail Tagging"
+            help
+                TODO
+
+        config EXAMPLE_SWITCH_TAIL_TAG
+            bool "Switch Mode with Tail Tagging accessible at L2 TAP"
+            help
+                TODO
+
+        config EXAMPLE_SWITCH_BRIDGE
+            bool "(!Experiment) Switch Mode using lwip bridge"
+            help
+                Experiment only. Do not choose! Does not work properly.
+
+    endchoice # EXAMPLE_P3_RMII_CLK
+
     config EXAMPLE_KSZ8863_RST_GPIO
         int "KSZ8863 Reset GPIO number"
         range -1 EXAMPLE_GPIO_RANGE_MAX

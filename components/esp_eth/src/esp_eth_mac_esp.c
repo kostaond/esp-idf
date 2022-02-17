@@ -225,41 +225,25 @@ static esp_err_t emac_esp32_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_t 
 {
     esp_err_t ret = ESP_OK;
     emac_esp32_t *emac = __containerof(mac, emac_esp32_t, parent);
-    //uint32_t sent_len = emac_hal_transmit_frame(&emac->hal, buf, length);
-    //ESP_GOTO_ON_FALSE(sent_len == length, ESP_ERR_INVALID_SIZE, err, TAG, "insufficient TX buffer size");
-
-    if (length < ETH_HEADER_LEN + ETH_MIN_PAYLOAD_LEN) {
-        uint32_t tail_len = ETH_HEADER_LEN + ETH_MIN_PAYLOAD_LEN - length + 1;
-        uint8_t *buff_tail = calloc(1, tail_len);
-        ESP_GOTO_ON_FALSE(buff_tail, ESP_ERR_NO_MEM, err, TAG, "no memory");
-        buff_tail[tail_len - 1] = 0;
-        emac->parent.transmit_special(mac, 2, buf, length, buff_tail, tail_len);
-        free(buff_tail);
-    } else {
-        uint8_t port = 0;
-        emac->parent.transmit_special(mac, 2, buf, length, &port, 1);
-    }
-
+    uint32_t sent_len = emac_hal_transmit_frame(&emac->hal, buf, length);
+    ESP_GOTO_ON_FALSE(sent_len == length, ESP_ERR_INVALID_SIZE, err, TAG, "insufficient TX buffer size");
     return ESP_OK;
 err:
     return ret;
 }
 
-static esp_err_t emac_esp32_transmit_multiple_bufs(esp_eth_mac_t *mac, uint32_t argc, ...)
+static esp_err_t emac_esp32_transmit_multiple_bufs(esp_eth_mac_t *mac, uint32_t argc, va_list args)
 {
     esp_err_t ret = ESP_OK;
     emac_esp32_t *emac = __containerof(mac, emac_esp32_t, parent);
-    va_list ap;
     uint8_t *bufs[argc];
     uint32_t len[argc];
     uint32_t exp_len = 0;
-    va_start(ap, argc);
     for(int i = 0; i < argc; i++) {
-        bufs[i] = va_arg(ap, uint8_t*);
-        len[i] = va_arg(ap, uint32_t);
+        bufs[i] = va_arg(args, uint8_t*);
+        len[i] = va_arg(args, uint32_t);
         exp_len += len[i];
     }
-    va_end(ap);
     uint32_t sent_len = emac_hal_transmit_multiple_buf_frame(&emac->hal, bufs, len, argc);
     ESP_GOTO_ON_FALSE(sent_len == exp_len, ESP_ERR_INVALID_SIZE, err, TAG, "insufficient TX buffer size");
     return ESP_OK;
