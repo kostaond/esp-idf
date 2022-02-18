@@ -174,6 +174,7 @@ extern "C" {
 
 
 #define ESP_NETIF_NETSTACK_DEFAULT_ETH          _g_esp_netif_netstack_default_eth
+#define ESP_NETIF_NETSTACK_BR_DEFAULT_ETH       _g_esp_netif_netstack_br_default_eth
 #define ESP_NETIF_NETSTACK_DEFAULT_WIFI_STA     _g_esp_netif_netstack_default_wifi_sta
 #ifdef CONFIG_ESP_WIFI_SOFTAP_SUPPORT
 #define ESP_NETIF_NETSTACK_DEFAULT_WIFI_AP      _g_esp_netif_netstack_default_wifi_ap
@@ -189,6 +190,7 @@ extern "C" {
 //  - Here referenced only as opaque pointers
 //
 extern const esp_netif_netstack_config_t *_g_esp_netif_netstack_default_eth;
+extern const esp_netif_netstack_config_t *_g_esp_netif_netstack_br_default_eth;
 extern const esp_netif_netstack_config_t *_g_esp_netif_netstack_default_wifi_sta;
 #ifdef CONFIG_ESP_WIFI_SOFTAP_SUPPORT
 extern const esp_netif_netstack_config_t *_g_esp_netif_netstack_default_wifi_ap;

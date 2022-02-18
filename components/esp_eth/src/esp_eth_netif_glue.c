@@ -56,6 +56,22 @@ static esp_err_t esp_eth_post_attach(esp_netif_t *esp_netif, void *args)
     return ESP_OK;
 }
 
+static esp_err_t esp_eth_post_attach_br(esp_netif_t *esp_netif, void *args)
+{
+    uint8_t eth_mac[6];
+    esp_eth_netif_glue_t *netif_glue = (esp_eth_netif_glue_t *)args;
+    netif_glue->base.netif = esp_netif;
+
+    esp_eth_ioctl(netif_glue->eth_driver, ETH_CMD_G_MAC_ADDR, eth_mac);
+    ESP_LOGI(TAG, "%02x:%02x:%02x:%02x:%02x:%02x", eth_mac[0], eth_mac[1],
+             eth_mac[2], eth_mac[3], eth_mac[4], eth_mac[5]);
+
+    esp_netif_set_mac(esp_netif, eth_mac);
+    ESP_LOGI(TAG, "ethernet attached to netif");
+
+    return ESP_OK;
+}
+
 static void eth_action_start(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
@@ -192,6 +208,27 @@ esp_eth_netif_glue_handle_t esp_eth_new_netif_glue(esp_eth_handle_t eth_hdl)
     }
     netif_glue->eth_driver = eth_hdl;
     netif_glue->base.post_attach = esp_eth_post_attach;
+    esp_eth_increase_reference(eth_hdl);
+
+    if (esp_eth_set_glue_instance_handlers(netif_glue) != ESP_OK) {
+        esp_eth_del_netif_glue(netif_glue);
+        return NULL;
+    }
+
+    return netif_glue;
+}
+
+// TODO: the Bridge netif will have to be attached either to all related ports or independent. It will
+// mainly require to associate netif actions with something.
+esp_eth_netif_glue_handle_t esp_eth_new_netif_glue_br(esp_eth_handle_t eth_hdl)
+{
+    esp_eth_netif_glue_t *netif_glue = calloc(1, sizeof(esp_eth_netif_glue_t));
+    if (!netif_glue) {
+        ESP_LOGE(TAG, "create netif glue failed");
+        return NULL;
+    }
+    netif_glue->eth_driver = eth_hdl;
+    netif_glue->base.post_attach = esp_eth_post_attach_br;
     esp_eth_increase_reference(eth_hdl);
 
     if (esp_eth_set_glue_instance_handlers(netif_glue) != ESP_OK) {

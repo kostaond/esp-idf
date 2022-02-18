@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2021 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2021-2022 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -436,6 +436,93 @@ uint32_t emac_hal_transmit_frame(emac_hal_context_t *hal, uint8_t *buf, uint32_t
 
     /* Set Own bit of the Tx descriptor Status: gives the buffer back to ETHERNET DMA */
     for (size_t i = 0; i < bufcount; i++) {
+        hal->tx_desc->TDES0.Own = EMAC_LL_DMADESC_OWNER_DMA;
+        hal->tx_desc = (eth_dma_tx_descriptor_t *)(hal->tx_desc->Buffer2NextDescAddr);
+    }
+    emac_ll_transmit_poll_demand(hal->dma_regs, 0);
+    return sentout;
+err:
+    return 0;
+}
+
+uint32_t emac_hal_transmit_multiple_buf_frame(emac_hal_context_t *hal, uint8_t **buffs, uint32_t *lengths, uint32_t buffs_cnt)
+{
+    /* Get the number of Tx buffers to use for the frame */
+    uint32_t dma_bufcount = 0;
+    uint32_t lastlen = lengths[0];
+    uint32_t sentout = 0;
+    uint32_t j = 0;
+    uint8_t *ptr = buffs[0];
+
+    eth_dma_tx_descriptor_t *desc_iter = hal->tx_desc;
+    /* A frame is transmitted in multiple descriptor */
+    while (dma_bufcount < CONFIG_ETH_DMA_TX_BUFFER_NUM && j < buffs_cnt) {
+        /* Check if the descriptor is owned by the Ethernet DMA (when 1) or CPU (when 0) */
+        if (desc_iter->TDES0.Own != EMAC_LL_DMADESC_OWNER_CPU) {
+            goto err;
+        }
+        /* Clear FIRST and LAST segment bits */
+        desc_iter->TDES0.FirstSegment = 0;
+        desc_iter->TDES0.LastSegment = 0;
+        desc_iter->TDES0.InterruptOnComplete = 0;
+        if (dma_bufcount == 0) {
+            /* Setting the first segment bit */
+            desc_iter->TDES0.FirstSegment = 1;
+        }
+        dma_bufcount++;
+        if (lastlen < CONFIG_ETH_DMA_BUFFER_SIZE) {
+            /* copy data from uplayer stack buffer */
+            memcpy((void *)(desc_iter->Buffer1Addr), ptr, lastlen);
+            sentout += lastlen;
+            j++;
+            /* Check if there are additional input buffers to process */
+            if (j < buffs_cnt) {
+                ptr = buffs[j];
+                uint32_t remainlen = CONFIG_ETH_DMA_BUFFER_SIZE - lastlen;
+                /* Check if the next buffer fully fits to currently utilized descriptor */
+                if (remainlen >= lengths[j]) {
+                    /* Program size */
+                    desc_iter->TDES1.TransmitBuffer1Size = lastlen + lengths[j];
+                    memcpy((void *)(desc_iter->Buffer1Addr + lastlen), ptr, lengths[j]);
+                    sentout += lengths[j];
+
+                    /* Setting the last segment bit */
+                    desc_iter->TDES0.LastSegment = 1;
+                    /* Enable transmit interrupt */
+                    desc_iter->TDES0.InterruptOnComplete = 1;
+                    break;
+                /* It does not fit, copy partially */
+                } else {
+                    desc_iter->TDES1.TransmitBuffer1Size = CONFIG_ETH_DMA_BUFFER_SIZE;
+                    memcpy((void *)(desc_iter->Buffer1Addr + lastlen), ptr, remainlen);
+                    ptr += remainlen;
+                    sentout += remainlen;
+                    lastlen = lengths[j] - remainlen;
+                }
+            /* No additional input buffers to process, mark descriptor as last */
+            } else {
+                /* Program size */
+                desc_iter->TDES1.TransmitBuffer1Size = lastlen;
+                /* Setting the last segment bit */
+                desc_iter->TDES0.LastSegment = 1;
+                /* Enable transmit interrupt */
+                desc_iter->TDES0.InterruptOnComplete = 1;
+                break;
+            }
+        } else {
+            /* Program size */
+            desc_iter->TDES1.TransmitBuffer1Size = CONFIG_ETH_DMA_BUFFER_SIZE;
+            /* copy data from uplayer stack buffer */
+            memcpy((void *)(desc_iter->Buffer1Addr), ptr, CONFIG_ETH_DMA_BUFFER_SIZE);
+            ptr += CONFIG_ETH_DMA_BUFFER_SIZE;
+            sentout += CONFIG_ETH_DMA_BUFFER_SIZE;
+            lastlen -= CONFIG_ETH_DMA_BUFFER_SIZE;
+        }
+        /* Point to next descriptor */
+        desc_iter = (eth_dma_tx_descriptor_t *)(desc_iter->Buffer2NextDescAddr);
+    }
+    /* Set Own bit of the Tx descriptor Status: gives the buffer back to ETHERNET DMA */
+    for (size_t i = 0; i < dma_bufcount; i++) {
         hal->tx_desc->TDES0.Own = EMAC_LL_DMADESC_OWNER_DMA;
         hal->tx_desc = (eth_dma_tx_descriptor_t *)(hal->tx_desc->Buffer2NextDescAddr);
     }
