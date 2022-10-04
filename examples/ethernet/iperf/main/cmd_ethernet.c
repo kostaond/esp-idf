@@ -201,41 +201,174 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+#include "esp_eth_ksz8863.h"
+#include "esp_check.h"
+#define CONFIG_EXAMPLE_P3_RMII_CLKI_EXTERNAL 1
+#define CONFIG_EXAMPLE_EXTERNAL_CLK_EN 1
+#define CONFIG_EXAMPLE_EXTERNAL_CLK_EN_GPIO 2
+#define CONFIG_EXAMPLE_CTRL_I2C 1
+#define CONFIG_EXAMPLE_I2C_MASTER_PORT 0
+#define CONFIG_EXAMPLE_I2C_SDA_GPIO 18
+#define CONFIG_EXAMPLE_I2C_SCL_GPIO 23
+#define CONFIG_EXAMPLE_I2C_CLOCK_KHZ 400
+#define CONFIG_EXAMPLE_KSZ8863_RST_GPIO 5
+static const char *TAG = "ksz8863_init";
+
+esp_err_t i2c_init(i2c_port_t i2c_master_port, i2c_config_t *i2c_conf)
+{
+    esp_err_t ret;
+
+    ESP_GOTO_ON_ERROR(i2c_param_config(i2c_master_port, i2c_conf), err, TAG, "I2C parameters configuration failed");
+    ESP_GOTO_ON_ERROR(i2c_driver_install(i2c_master_port, i2c_conf->mode, 0, 0, 0), err, TAG, "I2C driver install failed");
+
+    return ESP_OK;
+err:
+    return ret;
+}
+
+// board specific initialization routine, user to update per specific needs
+esp_err_t ksz8863_board_specific_init(esp_eth_handle_t eth_handle)
+{
+    esp_err_t ret = ESP_OK;
+
+#if CONFIG_EXAMPLE_CTRL_I2C
+    // initialize I2C interface
+    i2c_config_t i2c_bus_config = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = CONFIG_EXAMPLE_I2C_SDA_GPIO,
+        .scl_io_num = CONFIG_EXAMPLE_I2C_SCL_GPIO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = CONFIG_EXAMPLE_I2C_CLOCK_KHZ * 1000,
+    };
+    ESP_GOTO_ON_ERROR(i2c_init(CONFIG_EXAMPLE_I2C_MASTER_PORT, &i2c_bus_config), err, TAG, "I2C initialization failed");
+    ksz8863_ctrl_i2c_config_t i2c_dev_config = {
+        .dev_addr = KSZ8863_I2C_DEV_ADDR,
+        .i2c_master_port = CONFIG_EXAMPLE_I2C_MASTER_PORT,
+    };
+    ksz8863_ctrl_intf_config_t ctrl_intf_cfg = {
+        .host_mode = KSZ8863_I2C_MODE,
+        .i2c_dev_config = &i2c_dev_config,
+    };
+#elif CONFIG_EXAMPLE_CTRL_SPI
+    spi_bus_config_t buscfg = {
+        .miso_io_num = CONFIG_EXAMPLE_ETH_SPI_MISO_GPIO,
+        .mosi_io_num = CONFIG_EXAMPLE_ETH_SPI_MOSI_GPIO,
+        .sclk_io_num = CONFIG_EXAMPLE_ETH_SPI_SCLK_GPIO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+    };
+    ESP_ERROR_CHECK(spi_bus_initialize(CONFIG_EXAMPLE_ETH_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
+
+    ksz8863_ctrl_spi_config_t spi_dev_config = {
+        .host_id = CONFIG_EXAMPLE_ETH_SPI_HOST,
+        .clock_speed_hz = CONFIG_EXAMPLE_ETH_SPI_CLOCK_MHZ * 1000 * 1000,
+        .spics_io_num = CONFIG_EXAMPLE_ETH_SPI_CS_GPIO,
+    };
+    ksz8863_ctrl_intf_config_t ctrl_intf_cfg = {
+        .host_mode = KSZ8863_SPI_MODE,
+        .spi_dev_config = &spi_dev_config,
+    };
+#endif
+    ESP_GOTO_ON_ERROR(ksz8863_ctrl_intf_init(&ctrl_intf_cfg), err, TAG, "KSZ8863 control interface initialization failed");
+
+#ifdef CONFIG_EXAMPLE_EXTERNAL_CLK_EN
+    // Enable KSZ's external CLK
+    esp_rom_gpio_pad_select_gpio(CONFIG_EXAMPLE_EXTERNAL_CLK_EN_GPIO);
+    gpio_set_direction(CONFIG_EXAMPLE_EXTERNAL_CLK_EN_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(CONFIG_EXAMPLE_EXTERNAL_CLK_EN_GPIO, 1);
+#endif
+
+    ESP_GOTO_ON_ERROR(ksz8863_hw_reset(CONFIG_EXAMPLE_KSZ8863_RST_GPIO), err, TAG, "hardware reset failed");
+    // it does not make much sense to execute SW reset right after HW reset but it is present here for demonstration purposes
+    ESP_GOTO_ON_ERROR(ksz8863_sw_reset(eth_handle), err, TAG, "software reset failed");
+#if CONFIG_EXAMPLE_P3_RMII_CLKI_INTERNAL
+    ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_internal_clk(eth_handle, true), err, TAG, "P3 internal clk config failed");
+#endif
+
+#if CONFIG_EXAMPLE_P3_RMII_CLKI_INVERT
+    ESP_GOTO_ON_ERROR(ksz8863_p3_rmii_clk_invert(eth_handle, true), err, TAG, "P3 invert ckl failed");
+#endif
+err:
+    return ret;
+}
+
 void register_ethernet(void)
 {
     eth_event_group = xEventGroupCreate();
+
+    ESP_LOGW(TAG, "Simple Switch mode Example...\n");
+
+    // Initialize TCP/IP network interface (should be called only once in application)
+    ESP_ERROR_CHECK(esp_netif_init());
+    // Create default event loop that running in background
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    ESP_ERROR_CHECK(example_eth_init(&s_eth_handles, &s_eth_port_cnt));
+    // Init MAC and PHY configs to default
+    eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    s_eth_netifs = calloc(s_eth_port_cnt, sizeof(esp_netif_t *));
-    esp_netif_inherent_config_t esp_netif_config = ESP_NETIF_INHERENT_DEFAULT_ETH();
-    esp_netif_config_t cfg_spi = {
-        .base = &esp_netif_config,
-        .stack = ESP_NETIF_NETSTACK_DEFAULT_ETH
+    eth_esp32_emac_config_t esp32_emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
+
+    phy_config.reset_gpio_num = -1; // KSZ8863 is reset by separate function call since multiple instances exist
+    esp32_emac_config.smi_mdc_gpio_num = -1; // MIIM interface is not used since does not provide access to all registers
+    esp32_emac_config.smi_mdio_gpio_num = -1;
+
+    // Init Host Ethernet Interface (Port 3)
+    esp_eth_mac_t *host_mac = esp_eth_mac_new_esp32(&esp32_emac_config, &mac_config);
+    phy_config.phy_addr = -1; // this PHY is entry point to host
+    esp_eth_phy_t *host_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
+    esp_eth_config_t host_config = ETH_KSZ8863_DEFAULT_CONFIG(host_mac, host_phy);
+    host_config.on_lowlevel_init_done = ksz8863_board_specific_init;
+    esp_eth_handle_t host_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&host_config, &host_eth_handle));
+
+    // Create new default instance of esp-netif for Host Ethernet Port (P3)
+    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *eth_netif = esp_netif_new(&cfg);
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(host_eth_handle)));
+
+    // p1/2_eth_handle are going to be used basically only for Link Status indication and for configuration access
+    // Init P1 Ethernet Interface
+    ksz8863_eth_mac_config_t ksz8863_pmac_config = {
+        .pmac_mode = KSZ8863_SWITCH_MODE,
+        .port_num = KSZ8863_PORT_1,
     };
-    char if_key_str[10];
-    char if_desc_str[10];
-    char num_str[3];
-    for (int i = 0; i < s_eth_port_cnt; i++) {
-        itoa(i, num_str, 10);
-        strcat(strcpy(if_key_str, "ETH_"), num_str);
-        strcat(strcpy(if_desc_str, "eth"), num_str);
-        esp_netif_config.if_key = if_key_str;
-        esp_netif_config.if_desc = if_desc_str;
-        esp_netif_config.route_prio -= i*5;
-        s_eth_netifs[i] = esp_netif_new(&cfg_spi);
+    esp_eth_mac_t *p1_mac = esp_eth_mac_new_ksz8863(&ksz8863_pmac_config, &mac_config);
+    phy_config.phy_addr = KSZ8863_PORT_1;
+    esp_eth_phy_t *p1_phy = esp_eth_phy_new_ksz8863(&phy_config);
 
-        // attach Ethernet driver to TCP/IP stack
-        ESP_ERROR_CHECK(esp_netif_attach(s_eth_netifs[i], esp_eth_new_netif_glue(s_eth_handles[i])));
-    }
+    esp_eth_config_t p1_config = ETH_KSZ8863_DEFAULT_CONFIG(p1_mac, p1_phy);
+    esp_eth_handle_t p1_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&p1_config, &p1_eth_handle));
 
+    // Init P2 Ethernet Interface
+    ksz8863_pmac_config.port_num = KSZ8863_PORT_2;
+    esp_eth_mac_t *p2_mac = esp_eth_mac_new_ksz8863(&ksz8863_pmac_config, &mac_config);
+    phy_config.phy_addr = KSZ8863_PORT_2;
+    esp_eth_phy_t *p2_phy = esp_eth_phy_new_ksz8863(&phy_config);
+
+    esp_eth_config_t p2_config = ETH_KSZ8863_DEFAULT_CONFIG(p2_mac, p2_phy);
+    esp_eth_handle_t p2_eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&p2_config, &p2_eth_handle));
+
+    // Register user defined event handers
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &event_handler, NULL));
-    for (int i = 0; i < s_eth_port_cnt; i++) {
-        ESP_ERROR_CHECK(esp_eth_start(s_eth_handles[i]));
-    }
+
+
+    s_eth_handles = malloc(sizeof(esp_eth_handle_t));
+    s_eth_handles[0] = host_eth_handle;
+    s_eth_port_cnt = 1;
+
+    s_eth_netifs = calloc(s_eth_port_cnt, sizeof(esp_netif_t *));
+    s_eth_netifs[0] = eth_netif;
+
+    // start Ethernet driver state machines
+    ESP_ERROR_CHECK(esp_eth_start(host_eth_handle));
+    ESP_ERROR_CHECK(esp_eth_start(p1_eth_handle));
+    ESP_ERROR_CHECK(esp_eth_start(p2_eth_handle));
 
     eth_control_args.control = arg_str1(NULL, NULL, "<info>", "Get info of Ethernet");
     eth_control_args.end = arg_end(1);

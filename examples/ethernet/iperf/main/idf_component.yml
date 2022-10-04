@@ -1,0 +1,4 @@
+description: Simple Switch Example
+dependencies:
+  espressif/ksz8863:
+    version: '~0.2.0'
