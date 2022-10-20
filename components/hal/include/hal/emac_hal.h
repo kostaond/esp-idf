@@ -18,6 +18,9 @@ extern "C" {
 #include "soc/emac_mac_struct.h"
 #include "soc/emac_ext_struct.h"
 
+// TODO description
+#define EMAC_HAL_BUF_SIZE_AUTO 0
+
 /**
 * @brief Ethernet DMA TX Descriptor
 *
@@ -243,7 +246,11 @@ uint32_t emac_hal_transmit_frame(emac_hal_context_t *hal, uint8_t *buf, uint32_t
 
 uint32_t emac_hal_transmit_multiple_buf_frame(emac_hal_context_t *hal, uint8_t **buffs, uint32_t *lengths, uint32_t inbuffs_cnt);
 
+uint8_t *emac_hal_alloc_recv_buf(emac_hal_context_t *hal, uint32_t *size);
+
 uint32_t emac_hal_receive_frame(emac_hal_context_t *hal, uint8_t *buf, uint32_t size, uint32_t *frames_remain, uint32_t *free_desc);
+
+uint32_t emac_hal_flush_recv_frame(emac_hal_context_t *hal, uint32_t *frames_remain, uint32_t *free_desc);
 
 void emac_hal_enable_flow_ctrl(emac_hal_context_t *hal, bool enable);
 
