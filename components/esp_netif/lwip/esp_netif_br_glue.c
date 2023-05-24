@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2022 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2022-2023 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -28,11 +28,13 @@ struct esp_netif_br_glue_t {
     esp_event_handler_instance_t get_ip_ctx_handler;
 };
 
+esp_netif_t *br_esp_netif = NULL;
 static esp_err_t esp_eth_post_attach_br(esp_netif_t *esp_netif, void *args)
 {
     uint8_t eth_mac[6];
     esp_netif_br_glue_t *netif_glue = (esp_netif_br_glue_t *)args;
     netif_glue->base.netif = esp_netif;
+    br_esp_netif = esp_netif;
 
     esp_netif_get_mac(esp_netif, eth_mac);
     ESP_LOGI(TAG, "%02x:%02x:%02x:%02x:%02x:%02x", eth_mac[0], eth_mac[1],

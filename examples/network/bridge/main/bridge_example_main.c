@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2022 Espressif Systems (Shanghai) CO LTD
+ * SPDX-FileCopyrightText: 2022-2023 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
@@ -65,6 +65,73 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "~~~~~~~~~~~");
 }
 
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+#include "lwip/inet.h"
+
+#define CONFIG_EXAMPLE_WIFI_SSID "test_wifi"
+#define CONFIG_EXAMPLE_WIFI_PASSWORD "password87"
+
+extern esp_netif_t *br_esp_netif;
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    switch (event_id) {
+    case /*WIFI_EVENT_AP_START*/WIFI_EVENT_AP_STACONNECTED:
+        ESP_LOGI(TAG, "Wi-Fi AP got a station connected");
+        printf("br_esp_netif %p\n", br_esp_netif);
+        esp_err_t ret = esp_netif_bridge_add_port(br_esp_netif, esp_netif_get_handle_from_ifkey("WIFI_AP_DEF"));
+        printf("ret 0x%x\n", ret);
+        break;
+    /*case WIFI_EVENT_AP_STADISCONNECTED:
+        ESP_LOGI(TAG, "Wi-Fi AP got a station disconnected");
+        s_con_cnt--;
+        if (!s_con_cnt) {
+            s_sta_is_connected = false;
+            esp_wifi_internal_reg_rxcb(WIFI_IF_AP, NULL);
+        }
+        break;*/
+    default:
+        break;
+    }
+}
+
+static void initialize_wifi(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
+
+    //esp_netif_create_default_wifi_ap();
+    esp_netif_inherent_config_t esp_netif_config = ESP_NETIF_INHERENT_DEFAULT_WIFI_AP();
+    esp_netif_config.flags = ESP_NETIF_FLAG_AUTOUP; // TODO: esp-netif flags need to be zero when port's to be bridged
+    esp_netif_t *wifi_netif = esp_netif_create_wifi(WIFI_IF_AP, &esp_netif_config);
+    esp_wifi_set_default_wifi_ap_handlers();
+
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = CONFIG_EXAMPLE_WIFI_SSID,
+            .ssid_len = strlen(CONFIG_EXAMPLE_WIFI_SSID),
+            .password = CONFIG_EXAMPLE_WIFI_PASSWORD,
+            .max_connection = 2, // TODO make it configurable
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK,
+            .channel = 1 // TODO make it configurable
+        },
+    };
+    if (strlen(CONFIG_EXAMPLE_WIFI_PASSWORD) == 0) {
+        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+}
+
 void app_main(void)
 {
     // Initialize Ethernet driver
@@ -110,6 +177,11 @@ void app_main(void)
         // Attach Ethernet driver to TCP/IP stack
         ESP_ERROR_CHECK(esp_netif_attach(eth_netifs[i], esp_eth_new_netif_glue(eth_handles[i])));
     }
+    uint8_t br_ports = eth_port_cnt;
+
+//TODO "add if wifi"
+    initialize_wifi();
+    br_ports++;
 
     // Create instance of esp-netif for bridge interface
     esp_netif_inherent_config_t esp_netif_br_config = ESP_NETIF_INHERENT_DEFAULT_BR();
@@ -121,7 +193,7 @@ void app_main(void)
     bridgeif_config_t bridgeif_config = {
         .max_fdb_dyn_entries = 10, // maximum number of address entries in dynamic forwarding database
         .max_fdb_sta_entries = 2,  // maximum number of address entries in static forwarding database
-        .max_ports = eth_port_cnt  // maximum number of ports the bridge can consist of
+        .max_ports = br_ports      // maximum number of ports the bridge can consist of
     };
     esp_netif_br_config.bridge_info = &bridgeif_config;
     // Set MAC address of bridge interface the same as the Ethernet interface
@@ -134,6 +206,8 @@ void app_main(void)
     for (int i = 0; i < eth_port_cnt; i++) {
         ESP_ERROR_CHECK(esp_netif_br_glue_add_port(netif_br_glue, eth_netifs[i]));
     }
+    ESP_ERROR_CHECK(esp_netif_br_glue_add_port(netif_br_glue, esp_netif_get_handle_from_ifkey("WIFI_AP_DEF")));
+
     // Attach esp netif bridge glue instance with added ports to bridge netif
     ESP_ERROR_CHECK(esp_netif_attach(br_netif, netif_br_glue));
 
@@ -148,6 +222,7 @@ void app_main(void)
         // Start Ethernet driver state machine
         ESP_ERROR_CHECK(esp_eth_start(eth_handles[i]));
     }
+    ESP_ERROR_CHECK(esp_wifi_start());
 
     // --- Initialize Console ---
     esp_console_repl_t *repl = NULL;
@@ -157,7 +232,7 @@ void app_main(void)
     // install console REPL environment
     esp_console_dev_uart_config_t uart_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&uart_config, &repl_config, &repl));
-    example_register_br_config_commands(br_netif, eth_port_cnt);
+    example_register_br_config_commands(br_netif, br_ports);
     // start console REPL
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
 }
