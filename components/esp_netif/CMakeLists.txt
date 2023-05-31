@@ -51,7 +51,8 @@ idf_component_register(SRCS "${srcs}"
                     LDFRAGMENTS linker.lf)
 
 if(CONFIG_ESP_NETIF_L2_TAP OR CONFIG_ESP_NETIF_BRIDGE_EN)
-    idf_component_optional_requires(PRIVATE esp_eth vfs)
+    #TODO: always WiFi?
+    idf_component_optional_requires(PRIVATE esp_eth vfs esp_wifi)
 endif()
 
 

@@ -1,0 +1,21 @@
+menu "Example Bridge Configuration"
+    config EXAMPLE_BR_DHCPS
+        bool "Enable DHCP Server on bridge"
+        default n
+        help
+            Enable DHCP Server on bridge.
+endmenu
+
+menu "Example Wifi Configuration"
+    config EXAMPLE_BR_WIFI
+        # depends on
+        default n
+        bool "Bridge WiFi interface"
+        help
+            Add WiFi interface to be bridged.
+
+    config EXAMPLE_BR_WIFI_PASSWD
+        string "WiFi Password"
+        help
+            Add WiFi interface to be bridged.
+endmenu

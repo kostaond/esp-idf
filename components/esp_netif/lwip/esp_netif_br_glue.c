@@ -6,10 +6,12 @@
 #include <stdlib.h>
 #include "esp_netif_br_glue.h"
 #include "esp_eth_driver.h"
+#include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_check.h"
 
+#define CONFIG_ESP_NETIF_BRIDGE_EN 1
 #if CONFIG_ESP_NETIF_BRIDGE_EN
 
 const static char *TAG = "esp_netif_br_glue";
@@ -20,6 +22,7 @@ struct esp_netif_br_glue_t {
     esp_netif_driver_base_t base;
     bool br_started;
     esp_netif_t **ports_esp_netifs;
+    esp_netif_t *wifi_esp_netif;
     uint8_t port_cnt;
     esp_event_handler_instance_t eth_start_ctx_handler;
     esp_event_handler_instance_t eth_stop_ctx_handler;
@@ -28,13 +31,11 @@ struct esp_netif_br_glue_t {
     esp_event_handler_instance_t get_ip_ctx_handler;
 };
 
-esp_netif_t *br_esp_netif = NULL;
 static esp_err_t esp_eth_post_attach_br(esp_netif_t *esp_netif, void *args)
 {
     uint8_t eth_mac[6];
     esp_netif_br_glue_t *netif_glue = (esp_netif_br_glue_t *)args;
     netif_glue->base.netif = esp_netif;
-    br_esp_netif = esp_netif;
 
     esp_netif_get_mac(esp_netif, eth_mac);
     ESP_LOGI(TAG, "%02x:%02x:%02x:%02x:%02x:%02x", eth_mac[0], eth_mac[1],
@@ -45,84 +46,118 @@ static esp_err_t esp_eth_post_attach_br(esp_netif_t *esp_netif, void *args)
     return ESP_OK;
 }
 
-static void eth_action_start(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+static void is_br_stopped_start(esp_netif_br_glue_t *netif_glue)
 {
-    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
-    esp_netif_br_glue_t *netif_glue = handler_args;
-    ESP_LOGD(TAG, "eth_action_start: %p, %p, %d, %p, %p", netif_glue, base, event_id, event_data, *(esp_eth_handle_t *)event_data);
+    if (netif_glue->br_started == false) {
+        esp_netif_action_start(netif_glue->base.netif, 0, 0, NULL); // basically creates lwip_netif br instance
+        netif_glue->br_started = true;
+        ESP_LOGD(TAG, "bridge netif %p is started", netif_glue->base.netif);
+    }
+}
 
-    for (int i = 0; i < netif_glue->port_cnt; i++) {
-        if (eth_handle == esp_netif_get_io_driver(netif_glue->ports_esp_netifs[i])) {
-            if (netif_glue->br_started == false) {
-                esp_netif_action_start(netif_glue->base.netif, base, event_id, event_data); // basically creates lwip_netif br instance
-                netif_glue->br_started = true;
-                ESP_LOGD(TAG, "bridge netif %p is started", netif_glue->base.netif);
+static void is_br_started_stop(esp_netif_br_glue_t *netif_glue)
+{
+    if (netif_glue->br_started == true) {
+        esp_netif_action_stop(netif_glue->base.netif, 0, 0, NULL); // basically removes lwip_netif br
+        netif_glue->br_started = false;
+        ESP_LOGD(TAG, "bridge netif %p is stopped", netif_glue->base.netif);
+    }
+}
+
+static bool are_ports_disconnected(esp_netif_br_glue_t *netif_glue)
+{
+    int disc_cnt;
+    // check Ethernet ports at first
+    for (disc_cnt = 0; disc_cnt < netif_glue->port_cnt; disc_cnt++) {
+        if (esp_netif_is_netif_up(netif_glue->ports_esp_netifs[disc_cnt]) == true) {
+            break;
+        }
+    }
+
+    if (disc_cnt >= netif_glue->port_cnt) {
+        // check WiFi port if is also registered
+        if (netif_glue->wifi_esp_netif != NULL) {
+            if (esp_netif_is_netif_up(netif_glue->wifi_esp_netif) == false) {
+                return true;
             }
-            esp_netif_bridge_add_port(netif_glue->base.netif, netif_glue->ports_esp_netifs[i]);
+        } else {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void port_action_start(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    esp_netif_br_glue_t *netif_glue = handler_args;
+
+    if (base == WIFI_EVENT) {
+        ESP_LOGD(TAG, "wifi_action_start: %p, %p, %d, %p", netif_glue, base, event_id, event_data);
+        is_br_stopped_start(netif_glue);
+        esp_netif_bridge_add_port(netif_glue->base.netif, netif_glue->wifi_esp_netif);
+    } else if (base == ETH_EVENT) {
+        esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
+        ESP_LOGD(TAG, "eth_action_start: %p, %p, %d, %p, %p", netif_glue, base, event_id, event_data, *(esp_eth_handle_t *)event_data);
+        for (int i = 0; i < netif_glue->port_cnt; i++) {
+            if (eth_handle == esp_netif_get_io_driver(netif_glue->ports_esp_netifs[i])) {
+                is_br_stopped_start(netif_glue);
+                esp_netif_bridge_add_port(netif_glue->base.netif, netif_glue->ports_esp_netifs[i]);
+            }
         }
     }
 }
 
-static void eth_action_stop(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+static void port_action_stop(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
     esp_netif_br_glue_t *netif_glue = handler_args;
-    ESP_LOGD(TAG, "eth_action_stop: %p, %p, %d, %p, %p", netif_glue, base, event_id, event_data, *(esp_eth_handle_t *)event_data);
 
-    for (int i = 0; i < netif_glue->port_cnt; i++) {
-        // if one of the bridge's ports is stopped, we need to stop the bridge too, since port's lwip_netif is removed and so it would become
-        // an invalid reference in the bridge's internal structure (there is no way how to remove single port from bridge in current LwIP)
-        if (eth_handle == esp_netif_get_io_driver(netif_glue->ports_esp_netifs[i])) {
-            if (netif_glue->br_started == true) {
-                esp_netif_action_stop(netif_glue->base.netif, base, event_id, event_data); // basically removes lwip_netif br
-                netif_glue->br_started = false;
-                ESP_LOGD(TAG, "bridge netif %p is stopped", netif_glue->base.netif);
+    // if one of the bridge's ports is stopped, we need to stop the bridge too, since port's lwip_netif is removed and so it would become
+    // an invalid reference in the bridge's internal structure (there is no way how to remove single port from bridge in current LwIP)
+    if (base == WIFI_EVENT) {
+        ESP_LOGD(TAG, "wifi_action_stop: %p, %p, %d, %p", netif_glue, base, event_id, event_data);
+        is_br_started_stop(netif_glue);
+    } else if (base == ETH_EVENT) {
+        esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
+        ESP_LOGD(TAG, "eth_action_stop: %p, %p, %d, %p, %p", netif_glue, base, event_id, event_data, *(esp_eth_handle_t *)event_data);
+        for (int i = 0; i < netif_glue->port_cnt; i++) {
+            if (eth_handle == esp_netif_get_io_driver(netif_glue->ports_esp_netifs[i])) {
+                is_br_started_stop(netif_glue);
             }
         }
     }
 }
 
-static void eth_action_connected(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+static void port_action_connected(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
     esp_netif_br_glue_t *netif_glue = handler_args;
-    ESP_LOGD(TAG, "eth_action_connected: %p, %p, %d, %p, %p", netif_glue, base, event_id, event_data, *(esp_eth_handle_t *)event_data);
 
     // if bridge interface is already up, do nothing
     if (esp_netif_is_netif_up(netif_glue->base.netif) == true) {
         return;
     }
 
-    for (int i = 0; i < netif_glue->port_cnt; i++) {
-        if (eth_handle == esp_netif_get_io_driver(netif_glue->ports_esp_netifs[i])) {
-            esp_netif_action_connected(netif_glue->base.netif, base, event_id, event_data);
-            ESP_LOGD(TAG, "bridge netif %p is connected", netif_glue->base.netif);
-            break;
+    if (base == WIFI_EVENT) {
+        esp_netif_action_connected(netif_glue->base.netif, 0, 0, NULL);
+    } else if (base == ETH_EVENT) {
+        esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
+        ESP_LOGD(TAG, "eth_action_connected: %p, %p, %d, %p, %p", netif_glue, base, event_id, event_data, *(esp_eth_handle_t *)event_data);
+        for (int i = 0; i < netif_glue->port_cnt; i++) {
+            if (eth_handle == esp_netif_get_io_driver(netif_glue->ports_esp_netifs[i])) {
+                esp_netif_action_connected(netif_glue->base.netif, 0, 0, NULL);
+                ESP_LOGD(TAG, "bridge netif %p is connected", netif_glue->base.netif);
+                break;
+            }
         }
     }
 }
 
-static void eth_action_disconnected(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+static void port_action_disconnected(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
     esp_netif_br_glue_t *netif_glue = handler_args;
-    ESP_LOGD(TAG, "eth_action_disconnected: %p, %p, %d, %p, %p", netif_glue, base, event_id, event_data, *(esp_eth_handle_t *)event_data);
-
-    for (int i = 0; i < netif_glue->port_cnt; i++) {
-        // if this is a Ethernet interface associated with bridge, check if other ports are disconnected
-        if (eth_handle == esp_netif_get_io_driver(netif_glue->ports_esp_netifs[i])) {
-            int disc_cnt;
-            for (disc_cnt = 0; disc_cnt < netif_glue->port_cnt; disc_cnt++) {
-                if (esp_netif_is_netif_up(netif_glue->ports_esp_netifs[disc_cnt]) == true) {
-                    break;
-                }
-            }
-            // if all ports are disconnected, set bridge as disconnected too
-            if (disc_cnt >= netif_glue->port_cnt) {
-                esp_netif_action_disconnected(netif_glue->base.netif, base, event_id, event_data);
-                ESP_LOGD(TAG, "bridge netif %p is disconnected", netif_glue->base.netif);
-            }
-        }
+    // if all ports are disconnected, set bridge as disconnected too
+    if (are_ports_disconnected(netif_glue)) {
+        esp_netif_action_disconnected(netif_glue->base.netif, base, event_id, event_data);
+        ESP_LOGD(TAG, "bridge netif %p is disconnected", netif_glue->base.netif);
     }
 }
 
@@ -172,22 +207,22 @@ static esp_err_t esp_netif_br_glue_set_instance_handlers(esp_netif_br_glue_handl
 {
     ESP_RETURN_ON_FALSE(esp_netif_br_glue, ESP_ERR_INVALID_ARG, TAG, "esp_netif_br_glue handle can't be null");
 
-    esp_err_t ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_START, eth_action_start, esp_netif_br_glue, &esp_netif_br_glue->eth_start_ctx_handler);
+    esp_err_t ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_START, port_action_start, esp_netif_br_glue, &esp_netif_br_glue->eth_start_ctx_handler);
     if (ret != ESP_OK) {
         goto fail;
     }
 
-    ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_STOP, eth_action_stop, esp_netif_br_glue, &esp_netif_br_glue->eth_stop_ctx_handler);
+    ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_STOP, port_action_stop, esp_netif_br_glue, &esp_netif_br_glue->eth_stop_ctx_handler);
     if (ret != ESP_OK) {
         goto fail;
     }
 
-    ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_CONNECTED, eth_action_connected, esp_netif_br_glue, &esp_netif_br_glue->eth_connect_ctx_handler);
+    ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_CONNECTED, port_action_connected, esp_netif_br_glue, &esp_netif_br_glue->eth_connect_ctx_handler);
     if (ret != ESP_OK) {
         goto fail;
     }
 
-    ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, eth_action_disconnected, esp_netif_br_glue, &esp_netif_br_glue->eth_disconnect_ctx_handler);
+    ret = esp_event_handler_instance_register(ETH_EVENT, ETHERNET_EVENT_DISCONNECTED, port_action_disconnected, esp_netif_br_glue, &esp_netif_br_glue->eth_disconnect_ctx_handler);
     if (ret != ESP_OK) {
         goto fail;
     }
@@ -204,22 +239,37 @@ fail:
     return ret;
 }
 
-esp_netif_br_glue_handle_t esp_netif_br_glue_new(void)
+static esp_err_t esp_netif_br_glue_set_instance_handlers_wifi(esp_netif_br_glue_handle_t esp_netif_br_glue)
 {
-    esp_netif_br_glue_t *netif_glue = calloc(1, sizeof(esp_netif_br_glue_t));
-    if (!netif_glue) {
-        ESP_LOGE(TAG, "create netif glue failed");
-        return NULL;
+    ESP_RETURN_ON_FALSE(esp_netif_br_glue, ESP_ERR_INVALID_ARG, TAG, "esp_netif_br_glue handle can't be null");
+    ESP_RETURN_ON_FALSE(esp_netif_br_glue->wifi_esp_netif, ESP_ERR_INVALID_ARG, TAG, "WiFi port esp_netif isn't registered");
+
+    esp_err_t ret;
+    // TODO: change to esp_event_handler_instance_register
+    ret = esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_START, port_action_start, esp_netif_br_glue);
+    if (ret != ESP_OK) {
+        goto fail;
     }
 
-    netif_glue->base.post_attach = esp_eth_post_attach_br;
-
-    if (esp_netif_br_glue_set_instance_handlers(netif_glue) != ESP_OK) {
-        esp_netif_br_glue_del(netif_glue);
-        return NULL;
+    ret = esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STOP, port_action_stop, esp_netif_br_glue);
+    if (ret != ESP_OK) {
+        goto fail;
     }
 
-    return netif_glue;
+    ret = esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED, port_action_connected, esp_netif_br_glue);
+    if (ret != ESP_OK) {
+        goto fail;
+    }
+
+    ret = esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_AP_STADISCONNECTED, port_action_disconnected, esp_netif_br_glue);
+    if (ret != ESP_OK) {
+        goto fail;
+    }
+
+    return ESP_OK;
+fail:
+    // TODO: add clear
+    return ret;
 }
 
 esp_err_t esp_netif_br_glue_add_port(esp_netif_br_glue_handle_t netif_br_glue, esp_netif_t *esp_netif_port)
@@ -240,8 +290,35 @@ esp_err_t esp_netif_br_glue_add_port(esp_netif_br_glue_handle_t netif_br_glue, e
     return ESP_OK;
 }
 
+esp_err_t esp_netif_br_glue_add_wifi_port(esp_netif_br_glue_handle_t netif_br_glue, esp_netif_t *esp_netif_port)
+{
+    netif_br_glue->wifi_esp_netif = esp_netif_port;
+    esp_netif_br_glue_set_instance_handlers_wifi(netif_br_glue); // TODO add err handling + wifi type (AP/STA)?
+
+    return ESP_OK;
+}
+
+esp_netif_br_glue_handle_t esp_netif_br_glue_new(void)
+{
+    esp_netif_br_glue_t *netif_glue = calloc(1, sizeof(esp_netif_br_glue_t));
+    if (!netif_glue) {
+        ESP_LOGE(TAG, "create netif glue failed");
+        return NULL;
+    }
+
+    netif_glue->base.post_attach = esp_eth_post_attach_br;
+
+    if (esp_netif_br_glue_set_instance_handlers(netif_glue) != ESP_OK) {
+        esp_netif_br_glue_del(netif_glue);
+        return NULL;
+    }
+
+    return netif_glue;
+}
+
 esp_err_t esp_netif_br_glue_del(esp_netif_br_glue_handle_t netif_br_glue)
 {
+    is_br_started_stop(netif_br_glue);
     esp_netif_br_glue_clear_instance_handlers(netif_br_glue);
     free(netif_br_glue->ports_esp_netifs);
     free(netif_br_glue);
