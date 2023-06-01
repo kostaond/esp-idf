@@ -41,9 +41,10 @@ esp_err_t esp_netif_br_glue_add_port(esp_netif_br_glue_handle_t netif_br_glue, e
  *
  * @param netif_br_glue bridge netif glue
  * @param esp_netif_port WiFi port netif
+ * @param config  placeholder for WiFi port configuration
  * @return - ESP_OK on success
  */
-esp_err_t esp_netif_br_glue_add_wifi_port(esp_netif_br_glue_handle_t netif_br_glue, esp_netif_t *esp_netif_port);
+esp_err_t esp_netif_br_glue_add_wifi_port(esp_netif_br_glue_handle_t netif_br_glue, esp_netif_t *esp_netif_port, void *config);
 
 /**
  * @brief Delete netif glue of bridge

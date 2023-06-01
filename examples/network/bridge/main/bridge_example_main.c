@@ -15,6 +15,10 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "ethernet_init.h"
+#if CONFIG_EXAMPLE_BR_WIFI
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+#endif // CONFIG_EXAMPLE_BR_WIFI
 #include "sdkconfig.h"
 #include "esp_console.h"
 #include "bridge_console_cmd.h"
@@ -66,13 +70,7 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 #if CONFIG_EXAMPLE_BR_WIFI
-#include "esp_wifi.h"
-#include "nvs_flash.h"
-
-#define CONFIG_EXAMPLE_WIFI_SSID "test_wifi"
-#define CONFIG_EXAMPLE_WIFI_PASSWORD "password87"
-
-static void initialize_wifi(void)
+static void example_wifi_init(void)
 {
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -80,34 +78,26 @@ static void initialize_wifi(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
-    //esp_netif_create_default_wifi_ap();
-    esp_netif_inherent_config_t esp_netif_config = ESP_NETIF_INHERENT_DEFAULT_WIFI_AP();
-    esp_netif_config.flags = ESP_NETIF_FLAG_AUTOUP; // TODO: esp-netif flags need to be zero when port's to be bridged
-    esp_netif_config.ip_info = NULL;
-    esp_netif_t *wifi_netif = esp_netif_create_wifi(WIFI_IF_AP, &esp_netif_config);
-    esp_wifi_set_default_wifi_ap_handlers(); // TODO err check
-
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     wifi_config_t wifi_config = {
         .ap = {
-            .ssid = CONFIG_EXAMPLE_WIFI_SSID,
-            .ssid_len = strlen(CONFIG_EXAMPLE_WIFI_SSID),
-            .password = CONFIG_EXAMPLE_WIFI_PASSWORD,
-            .max_connection = 2, // TODO make it configurable
+            .ssid = CONFIG_EXAMPLE_BR_WIFI_SSID,
+            .ssid_len = strlen(CONFIG_EXAMPLE_BR_WIFI_SSID),
+            .password = CONFIG_EXAMPLE_BR_WIFI_PASSWORD,
+            .max_connection = CONFIG_EXAMPLE_BR_MAX_STA_CONN,
             .authmode = WIFI_AUTH_WPA_WPA2_PSK,
-            .channel = 1 // TODO make it configurable
+            .channel = CONFIG_EXAMPLE_BR_WIFI_CHANNEL
         },
     };
-    if (strlen(CONFIG_EXAMPLE_WIFI_PASSWORD) == 0) {
+    if (strlen(CONFIG_EXAMPLE_BR_WIFI_PASSWORD) == 0) {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
     }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
 }
 #endif //CONFIG_EXAMPLE_BR_WIFI
-
 
 void app_main(void)
 {
@@ -157,7 +147,13 @@ void app_main(void)
     uint8_t br_ports = eth_port_cnt;
 
 #if CONFIG_EXAMPLE_BR_WIFI
-    initialize_wifi();
+    example_wifi_init();
+    esp_netif_inherent_config_t esp_netif_config_wifi = ESP_NETIF_INHERENT_DEFAULT_WIFI_AP();
+    esp_netif_config_wifi.flags = ESP_NETIF_FLAG_AUTOUP; // esp-netif flags need to be zero when port's to be bridged except for AP's ESP_NETIF_FLAG_AUTOUP
+    esp_netif_config_wifi.ip_info = NULL; // no IP address for physical interface
+    esp_netif_t *wifi_netif = esp_netif_create_wifi(WIFI_IF_AP, &esp_netif_config_wifi);
+    ESP_ERROR_CHECK(esp_wifi_set_default_wifi_ap_handlers());
+
     br_ports++;
 #endif
 
@@ -188,7 +184,9 @@ void app_main(void)
     for (int i = 0; i < eth_port_cnt; i++) {
         ESP_ERROR_CHECK(esp_netif_br_glue_add_port(netif_br_glue, eth_netifs[i]));
     }
-    ESP_ERROR_CHECK(esp_netif_br_glue_add_wifi_port(netif_br_glue, esp_netif_get_handle_from_ifkey("WIFI_AP_DEF")));
+#if CONFIG_EXAMPLE_BR_WIFI
+    ESP_ERROR_CHECK(esp_netif_br_glue_add_wifi_port(netif_br_glue, wifi_netif, NULL));
+#endif // CONFIG_EXAMPLE_BR_WIFI
 
     // Attach esp netif bridge glue instance with added ports to bridge netif
     ESP_ERROR_CHECK(esp_netif_attach(br_netif, netif_br_glue));
@@ -207,11 +205,6 @@ void app_main(void)
 #if CONFIG_EXAMPLE_BR_WIFI
     ESP_ERROR_CHECK(esp_wifi_start());
 #endif
-
-#if CONFIG_EXAMPLE_BR_DHCPS
-    esp_err_t ret = esp_netif_dhcps_start(br_netif); // TODO should go to event handler??
-    printf("ret %d\n", ret);
-#endif // CONFIG_EXAMPLE_BR_DHCPS
 
     // --- Initialize Console ---
     esp_console_repl_t *repl = NULL;
